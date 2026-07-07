@@ -5,11 +5,12 @@
 // This also covers opening special pages such as Bookmarks Manager (chrome://bookmarks),
 // History, Downloads, Settings, etc. from the menu or bookmarks bar.
 //
-// We deliberately ignore:
-// - Real web pages: links opened in a new tab (Cmd/Ctrl/middle-click, "open in
-//   new tab") and duplicates/restores of pages all load an http(s) URL and are
-//   already placed sensibly by Chrome. (We can't use openerTabId to detect link
-//   opens: modern Chrome/Brave set it on Cmd+T too.)
+// We decide purely by *position*: Chrome appends genuine "new tab" actions at
+// the end of the strip, so we reposition tabs created near the end and leave the
+// rest alone. That naturally ignores:
+// - Links opened from a page (Cmd/Ctrl/middle-click, window.open): Chrome inserts
+//   them right next to their source, not at the end. (openerTabId can't be used
+//   to detect these — modern Chrome/Brave set it on Cmd+T too.)
 // - Duplicates (Chrome inserts them locally next to the source, not at the global end)
 // - Tabs that already have a groupId at creation time
 // - Bulk restores / session restores (they are created at historical indices, not appended at the end)
@@ -65,19 +66,16 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     active: newTab.active
   });
 
-  // Leave real web pages where Chrome puts them: a link opened in a new tab
-  // (Ctrl/Cmd-click, "open in new tab"), a duplicated page, and a restored tab
-  // all load an http(s) URL and are already positioned sensibly by Chrome.
-  // A genuine "new tab" action (Cmd+T, the + button, or a chrome:// page opened
-  // from the UI) shows the New Tab Page / an internal URL instead.
+  // What tells a "new tab action" (Cmd+T, the + button, opening a bookmark,
+  // Bookmark Manager, History/Downloads/Settings from the menu) apart from a
+  // page-initiated open (a link on a page, window.open) or a duplicate/restore
+  // is *position*, not the URL: Chrome appends new-tab actions at the end of the
+  // strip, while it inserts page opens right next to their source and puts
+  // restores back at their historical mid-strip indices. So we rely on the
+  // "created near the end" check below rather than inspecting the URL.
   //
-  // We deliberately do NOT key off openerTabId: modern Chrome and Brave set it
-  // even for Cmd+T, so it no longer distinguishes new tabs from link opens.
-  // (That guard is what made every new tab get skipped and stranded at the end.)
-  if (/^https?:\/\//i.test(url)) {
-    console.log('[dLux TabToRight] skipped: real web page (link/duplicate/restore)', url);
-    return;
-  }
+  // (We can't key off openerTabId either: modern Chrome and Brave set it even
+  // for Cmd+T, so it no longer distinguishes new tabs from link opens.)
 
   // Ignore if Chrome already put it in a group at creation (protects some group restores)
   if (typeof newTab.groupId === 'number' && newTab.groupId !== -1) {
