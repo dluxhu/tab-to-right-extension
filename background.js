@@ -31,10 +31,26 @@ function doReposition(newTab, referenceTab) {
     });
 }
 
+// Remember which tab is active in each window. When a new tab is created it
+// *immediately* steals "active", so at onCreated time the previously-viewed
+// tab is only knowable from having tracked it here.
+//
+// (We do NOT use tab.lastAccessed for this: Chrome bumps lastAccessed when a
+// tab is *created*, not only when it becomes active, so a freshly-opened
+// background tab would outrank the tab the user is actually looking at.)
+// ponytail: in-memory map, reset on service-worker restart; the lastAccessed
+// fallback below covers that gap until the next onActivated repopulates it.
+const lastActiveByWindow = new Map();
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  lastActiveByWindow.set(windowId, tabId);
+});
+
 chrome.tabs.onCreated.addListener(async (newTab) => {
   if (!newTab || typeof newTab.id !== 'number') return;
 
   const winId = newTab.windowId;
+  // Capture synchronously, before the new tab's own onActivated overwrites it.
+  const prevActiveId = lastActiveByWindow.get(winId);
   const url = (newTab.pendingUrl || newTab.url || '');
 
   console.log('[dLux TabToRight] onCreated', {
@@ -80,20 +96,24 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     return;
   }
 
-  // Robust way to find the tab to insert after:
-  // Exclude the newly created tab itself, then pick the one with the most recent lastAccessed time.
-  // This is the tab the user was most recently looking at.
-  // This works reliably even when the new tab has already been activated, and across service worker restarts.
+  // Find the tab to insert after: the tab that was active before this new one
+  // stole focus (tracked via onActivated). Exclude the new tab itself.
   const candidates = allTabs.filter(t => t.id !== newTab.id);
   if (candidates.length === 0) {
     console.log('[dLux TabToRight] no other tabs to insert after');
     return;
   }
 
-  candidates.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-  const ref = candidates[0];
-
-  console.log('[dLux TabToRight] chosen reference tab by lastAccessed:', {id: ref.id, index: ref.index, groupId: ref.groupId, lastAccessed: ref.lastAccessed});
+  let ref = candidates.find(t => t.id === prevActiveId);
+  if (!ref) {
+    // Fallback (e.g. service worker just started and hasn't observed an
+    // onActivated yet): most recently accessed other tab.
+    candidates.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+    ref = candidates[0];
+    console.log('[dLux TabToRight] no tracked active tab, fell back to lastAccessed:', {id: ref.id, index: ref.index});
+  } else {
+    console.log('[dLux TabToRight] chosen reference = previously active tab:', {id: ref.id, index: ref.index, groupId: ref.groupId});
+  }
 
   if (count <= 1) {
     console.log('[dLux TabToRight] only one tab in window');
