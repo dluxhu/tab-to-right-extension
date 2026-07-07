@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "dLux Open New Tab To The Right",
+  "version": "1.0.0",
+  "description": "Opens Cmd+T (and similar new tabs like Bookmark Manager from the bar) right next to the current tab. Respects links, duplicates, and restores.",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "tabs"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "incognito": "spanning"
+}
