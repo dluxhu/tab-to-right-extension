@@ -5,16 +5,25 @@
 // This also covers opening special pages such as Bookmarks Manager (chrome://bookmarks),
 // History, Downloads, Settings, etc. from the menu or bookmarks bar.
 //
-// We decide purely by *position*: Chrome appends genuine "new tab" actions at
-// the end of the strip, so we reposition tabs created near the end and leave the
-// rest alone. That naturally ignores:
+// We decide by *position*: Chrome appends genuine "new tab" actions at the end
+// of the strip, so we reposition tabs created near the end and leave the rest
+// alone. That naturally ignores:
 // - Links opened from a page (Cmd/Ctrl/middle-click, window.open): Chrome inserts
 //   them right next to their source, not at the end. (openerTabId can't be used
 //   to detect these — modern Chrome/Brave set it on Cmd+T too.)
 // - Duplicates (Chrome inserts them locally next to the source, not at the global end)
-// - Tabs that already have a groupId at creation time
 // - Bulk restores / session restores (they are created at historical indices, not appended at the end)
 // - New windows (single-tab case)
+//
+// Tab groups need one extra step. When you open a saved group, or create a new
+// group, Chrome creates the tabs first and assigns them to a group a beat LATER,
+// so their groupId is still -1 at onCreated. We therefore wait a short moment and
+// re-read groupId before acting:
+// - Tab ends up grouped  -> it's a group being opened/created: leave it at the
+//   end, intact and beside (not nested). (Fixes the "first tab gets separated".)
+// - Tab stays ungrouped  -> a real new tab: move it next to the current tab, and
+//   if the current tab is in a group, add the new tab to that group (so Cmd+T
+//   inside a group stays in the group).
 
 function doReposition(newTab, referenceTab) {
   if (!referenceTab || referenceTab.id === newTab.id) return;
@@ -49,6 +58,14 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   lastActiveByWindow.set(windowId, tabId);
 });
 
+// How long to wait for Chrome to finish assigning a just-created tab to a group
+// before we decide what to do with it. Opening a saved group / creating a new
+// group groups the tabs shortly AFTER onCreated fires; this delay lets that
+// settle so we don't yank a group tab out on its way in.
+// ponytail: fixed delay tuned by eye; if a group's first tab still gets pulled
+// out, this is the knob to raise (the after-settle log shows if it's too short).
+const GROUP_SETTLE_MS = 150;
+
 chrome.tabs.onCreated.addListener(async (newTab) => {
   if (!newTab || typeof newTab.id !== 'number') return;
 
@@ -66,20 +83,23 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     active: newTab.active
   });
 
-  // What tells a "new tab action" (Cmd+T, the + button, opening a bookmark,
-  // Bookmark Manager, History/Downloads/Settings from the menu) apart from a
-  // page-initiated open (a link on a page, window.open) or a duplicate/restore
-  // is *position*, not the URL: Chrome appends new-tab actions at the end of the
-  // strip, while it inserts page opens right next to their source and puts
-  // restores back at their historical mid-strip indices. So we rely on the
-  // "created near the end" check below rather than inspecting the URL.
-  //
-  // (We can't key off openerTabId either: modern Chrome and Brave set it even
-  // for Cmd+T, so it no longer distinguishes new tabs from link opens.)
+  // Let group membership settle, then re-read the tab (its index and groupId may
+  // both have changed as sibling group tabs were created and grouped).
+  await new Promise(r => setTimeout(r, GROUP_SETTLE_MS));
+  let tab;
+  try {
+    tab = await chrome.tabs.get(newTab.id);
+  } catch (e) {
+    console.log('[dLux TabToRight] tab gone before we could act', newTab.id);
+    return;
+  }
+  console.log('[dLux TabToRight] after settle', { id: tab.id, index: tab.index, groupId: tab.groupId });
 
-  // Ignore if Chrome already put it in a group at creation (protects some group restores)
-  if (typeof newTab.groupId === 'number' && newTab.groupId !== -1) {
-    console.log('[dLux TabToRight] skipped: already has groupId at creation');
+  // If Chrome put it in a group, it's a saved group being opened or a new group
+  // being created: leave it where it is — at the end, together, and beside the
+  // current group rather than nested into it.
+  if (typeof tab.groupId === 'number' && tab.groupId !== -1) {
+    console.log('[dLux TabToRight] skipped: tab is in a group (group opened/created)');
     return;
   }
 
@@ -98,16 +118,16 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
   // Chrome creates "new tab" actions (Cmd+T, Bookmark Manager from bar, etc.)
   // by appending them at (or near) the *end* of the tab strip (high index).
   // Duplicates and restores insert at other (usually lower) positions.
-  const createdNearEnd = newTab.index >= maxIndex - 1;
+  const createdNearEnd = tab.index >= maxIndex - 1;
 
   if (!createdNearEnd) {
-    console.log('[dLux TabToRight] skipped: not created near the end of the strip', {index: newTab.index, maxIndex, count});
+    console.log('[dLux TabToRight] skipped: not created near the end of the strip', {index: tab.index, maxIndex, count});
     return;
   }
 
   // Find the tab to insert after: the tab that was active before this new one
   // stole focus (tracked via onActivated). Exclude the new tab itself.
-  const candidates = allTabs.filter(t => t.id !== newTab.id);
+  const candidates = allTabs.filter(t => t.id !== tab.id);
   if (candidates.length === 0) {
     console.log('[dLux TabToRight] no other tabs to insert after');
     return;
@@ -129,6 +149,6 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     return;
   }
 
-  console.log('[dLux TabToRight] repositioning tab', newTab.id, 'after', ref.id);
-  doReposition(newTab, ref);
+  console.log('[dLux TabToRight] repositioning tab', tab.id, 'after', ref.id);
+  doReposition(tab, ref);
 });
