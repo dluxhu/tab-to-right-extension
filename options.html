@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font: 13px/1.45 system-ui, sans-serif;
+      margin: 16px 18px 18px;
+    }
+    label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+    input { margin-top: 2px; }
+    .hint { color: CanvasText; opacity: 0.65; margin: 8px 0 0 24px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <label>
+    <input type="checkbox" id="stackLinks">
+    <span>Newest link always next to the current tab</span>
+  </label>
+  <p class="hint">Chrome puts the second link to the right of the first. This keeps every new link immediately to the right of the tab you clicked from.</p>
+  <script src="options.js"></script>
+</body>
+</html>
