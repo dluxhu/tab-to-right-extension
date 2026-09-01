@@ -4,8 +4,9 @@
 // clicks do too — newest always immediately to the right of the source tab
 // (Chrome's default puts the second link to the right of the first).
 //
-// Session restore is ignored: onStartup starts a hush that extends while tabs
-// keep arriving, and discarded tabs (lazy-restored) are never moved.
+// Tabs Chrome creates in batches — session restore, opening a saved tab group,
+// "open all bookmarks" — are left exactly where Chrome put them. So are pinned
+// tabs and tabs Chrome itself grouped.
 
 // Track the active tab per window: a new tab immediately steals "active", so the
 // previously-viewed tab is only knowable from having tracked it here. (We can't
@@ -42,12 +43,33 @@ chrome.runtime.onStartup.addListener(() => {
   console.log('[dLux TabToRight] startup hush');
 });
 
+// A person opens one tab at a time; Chrome opens many at once (session restore,
+// a saved group, "open all bookmarks"). Timestamp every creation per window and
+// leave a whole burst wherever Chrome put it — this is the backstop for when the
+// onStartup hush above loses the race with the first restored tabs.
+// ponytail: 3-in-700ms tuned by eye; a false positive only costs one tab its
+// repositioning, so err on the side of not touching things.
+const BURST_MS = 700;
+const BURST_MIN = 3;
+const createTimes = new Map();
+function recentCreates(winId) {
+  const now = Date.now();
+  const times = (createTimes.get(winId) || []).filter(t => now - t < BURST_MS);
+  createTimes.set(winId, times);
+  return times;
+}
+chrome.windows.onRemoved.addListener(winId => {
+  createTimes.delete(winId);
+  lastActiveByWindow.delete(winId);
+});
+
 chrome.tabs.onCreated.addListener(async (newTab) => {
   if (!newTab || typeof newTab.id !== 'number') return;
 
   const winId = newTab.windowId;
   // Capture before the new tab's own onActivated overwrites it.
   const prevActiveId = lastActiveByWindow.get(winId);
+  recentCreates(winId).push(Date.now());
   console.log('[dLux TabToRight] onCreated', {
     id: newTab.id, index: newTab.index, url: newTab.pendingUrl || newTab.url || '',
     openerTabId: newTab.openerTabId, groupId: newTab.groupId, active: newTab.active
@@ -60,6 +82,12 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
   if (Date.now() < hushUntil) {
     hushUntil = Date.now() + 2000;
     console.log('[dLux TabToRight] skipped: startup restore', newTab.id);
+    return;
+  }
+
+  // Checked after the settle so every tab of a burst sees the others' timestamps.
+  if (recentCreates(winId).length >= BURST_MIN) {
+    console.log('[dLux TabToRight] skipped: batch creation (restore / group / open-all)');
     return;
   }
 
@@ -78,6 +106,20 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     return;
   }
 
+  // The pinned strip is the user's own layout; never reshuffle it.
+  if (tab.pinned) {
+    console.log('[dLux TabToRight] skipped: pinned');
+    return;
+  }
+
+  // Grouped with no opener => Chrome grouped it itself (a saved group opening, a
+  // new group): moving it tears the group apart. A link clicked inside a group
+  // also lands grouped, but carries openerTabId — that one we may still restack.
+  if (tab.groupId !== -1 && !tab.openerTabId) {
+    console.log('[dLux TabToRight] skipped: grouped by Chrome (group opened/created)');
+    return;
+  }
+
   let allTabs;
   try {
     allTabs = await chrome.tabs.query({ windowId: winId });
@@ -90,12 +132,6 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
   // Chrome appends genuine "new tab" actions at the end; link clicks land next
   // to their source, mid-strip.
   const nearEnd = tab.index >= allTabs.length - 2;
-
-  // Grouped + at the end => a saved group opening or a new group: leave it.
-  if (tab.groupId !== -1 && nearEnd) {
-    console.log('[dLux TabToRight] skipped: in a group (group opened/created)');
-    return;
-  }
 
   // Mid-strip: Chrome already placed it (link, duplicate). Restack only if opted in.
   if (!nearEnd && !settings.stackLinks) {
