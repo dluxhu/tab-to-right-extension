@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "dLux Open New Tab To The Right",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "New tabs open to the right of your current tab. Optional: newest link click always next to the current tab.",
   "background": {
     "service_worker": "background.js"

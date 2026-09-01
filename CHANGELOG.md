@@ -1,0 +1,27 @@
+# Changelog
+
+## 1.2.0 — 2026-09-01
+
+Fixed
+- Opening a saved tab group no longer scatters its tabs across the strip.
+- Restoring a session at startup no longer reorders your tabs.
+- Pinned tabs are left where they are.
+
+## 1.1.0 — 2026-08-15
+
+New
+- Option: keep every link you open immediately to the right of the tab you
+  clicked from. Chrome normally puts the second link after the first, so the
+  newest one drifts away. Toggle it in the extension's options.
+- Restored sessions are left alone at startup.
+
+## 1.0.0 — 2026-07-07
+
+First release.
+- New tabs (Cmd+T / Ctrl+T, the + button, the New Tab menu item) open
+  immediately to the right of your current tab instead of at the far end.
+- Also covers pages opened from the browser UI: Bookmark Manager, History,
+  Downloads, Settings, and bookmarks opened in a new tab.
+- A new tab opened from inside a tab group joins that group.
+- Links, duplicated tabs, restored tabs, and tab groups are left where Chrome
+  puts them.
