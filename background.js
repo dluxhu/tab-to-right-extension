@@ -19,14 +19,40 @@
 // one before it is then the tab the user was actually on.
 const lastActiveByWindow = new Map();
 const prevActiveByWindow = new Map();
+
+// Mirrored into session storage, because the maps alone don't survive the
+// service worker being unloaded after ~30s idle — and opening a saved tab group
+// is exactly the sort of event that wakes it, so on the path that needs an anchor
+// most there would otherwise be nothing to anchor to.
+const ACTIVE_KEY = 'activeByWindow';
+const persistActive = () => chrome.storage.session.set({
+  [ACTIVE_KEY]: Object.fromEntries(
+    [...lastActiveByWindow].map(([w, id]) => [w, [id, prevActiveByWindow.get(w)]])),
+}).catch(() => {});
+
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   const current = lastActiveByWindow.get(windowId);
   if (current !== undefined && current !== tabId) prevActiveByWindow.set(windowId, current);
   lastActiveByWindow.set(windowId, tabId);
+  persistActive();
 });
-chrome.tabs.query({ active: true }).then(tabs => {
-  for (const t of tabs) lastActiveByWindow.set(t.windowId, t.id);
-});
+
+// Rehydrate, then fill any window session storage knew nothing about from the
+// live active tab. Never overwrite: what onActivated has already recorded in this
+// worker's lifetime is newer than either source.
+const activeReady = chrome.storage.session.get(ACTIVE_KEY)
+  .then(({ [ACTIVE_KEY]: saved }) => {
+    for (const [w, [current, previous]] of Object.entries(saved || {})) {
+      const winId = Number(w);
+      if (current !== undefined && !lastActiveByWindow.has(winId)) lastActiveByWindow.set(winId, current);
+      if (previous !== undefined && !prevActiveByWindow.has(winId)) prevActiveByWindow.set(winId, previous);
+    }
+  })
+  .then(() => chrome.tabs.query({ active: true }))
+  .then(tabs => {
+    for (const t of tabs) if (!lastActiveByWindow.has(t.windowId)) lastActiveByWindow.set(t.windowId, t.id);
+  })
+  .catch(err => console.log('[dLux TabToRight] could not restore the active-tab history', err));
 
 // Time to let a new tab's index and group membership settle before we act.
 // ponytail: fixed delay tuned by eye; the group signals below no longer depend on
@@ -50,6 +76,9 @@ let settings = { ...DEFAULTS };
 const settingsReady = chrome.storage.local.get(DEFAULTS)
   .then(s => { settings = s; })
   .catch(err => console.log('[dLux TabToRight] settings unreadable, using defaults', err));
+
+// Everything a cold-started worker needs before it can judge anything.
+const ready = Promise.all([settingsReady, activeReady]);
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   for (const [k, { newValue }] of Object.entries(changes)) settings[k] = newValue;
@@ -92,6 +121,7 @@ chrome.windows.onRemoved.addListener(winId => {
   createTimes.delete(winId);
   lastActiveByWindow.delete(winId);
   prevActiveByWindow.delete(winId);
+  persistActive();
   groupOpenedAt.delete(winId);
 });
 
@@ -119,9 +149,12 @@ function groupOpening(winId, tab, tabCreatedAt) {
 chrome.tabGroups.onCreated.addListener(async (group) => {
   const winId = group.windowId;
   groupOpenedAt.set(winId, { at: Date.now(), groupId: group.id });
-  // Captured before anything else steals focus; the group may already hold one.
-  const anchors = [lastActiveByWindow.get(winId), prevActiveByWindow.get(winId)];
-  await settingsReady;
+  // Read before anything else steals focus; the group may already hold one. On a
+  // cold worker both are empty until the rehydrate lands, so ask again after.
+  const readAnchors = () => [lastActiveByWindow.get(winId), prevActiveByWindow.get(winId)];
+  let anchors = readAnchors();
+  await ready;
+  if (!anchors.some(id => id !== undefined)) anchors = readAnchors();
   console.log('[dLux TabToRight] group created', { id: group.id, winId, placement: settings.groupPlacement });
   if (settings.groupPlacement !== 'right') return;
 
@@ -168,15 +201,12 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
 
   const others = allTabs.filter(t => t.groupId !== group.id);
   // The tab the user was on: the current one, or the one before it when the group
-  // has already taken focus. lastAccessed is a last resort — this file's header
-  // explains why it can't be trusted on its own.
-  let ref = anchors.map(id => others.find(t => t.id === id)).find(Boolean);
+  // has already taken focus. No lastAccessed fallback here — Chrome bumps it on
+  // tab *creation*, so the group's own fresh tabs would outrank the real anchor.
+  // Nothing to anchor to means leaving the group where Chrome put it.
+  const ref = anchors.map(id => others.find(t => t.id === id)).find(Boolean);
   if (!ref) {
-    others.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-    ref = others[0];
-  }
-  if (!ref) {
-    console.log('[dLux TabToRight] group skipped: no reference tab');
+    console.log('[dLux TabToRight] group skipped: no reference tab', anchors);
     return;
   }
   // Land after the whole of the reference's own group, never in the middle of it
@@ -217,7 +247,7 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     return;
   }
 
-  await settingsReady;
+  await ready;
 
   // Checked after the settle so every tab of a burst sees the others' timestamps.
   if (recentCreates(winId).length >= BURST_MIN) {

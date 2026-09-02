@@ -325,8 +325,9 @@ await withChrome(alt, async ({ inSW, strip }) => {
   await sleep(2200);
   s = await strip();
   const innerEnd = Math.max(...inner.ids.map(id => slotOf(s, id)));
-  const innerIntact = inner.ids.every((id, i) => slotOf(s, id) === slotOf(s, inner.ids[0]) + i
-                                                && s[slotOf(s, id)].includes(`G${inner.gid}`));
+  const innerIntact = slotOf(s, inner.ids[0]) >= 0
+    && inner.ids.every((id, i) => slotOf(s, id) === slotOf(s, inner.ids[0]) + i
+                                  && s[slotOf(s, id)].includes(`G${inner.gid}`));
   check('a group opened from inside a group lands after it, not in it',
         innerIntact && outer.ids.every((id, i) => slotOf(s, id) === innerEnd + 1 + i
                                                  && s[slotOf(s, id)].includes(`G${outer.gid}`)),

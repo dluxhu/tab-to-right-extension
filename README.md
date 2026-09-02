@@ -67,10 +67,21 @@ batch must be left exactly where Chrome put it or the layout comes apart:
   arriving; lazy-restored tabs are discarded and skipped outright.
 - **Pinned tabs**, and tabs Chrome grouped itself.
 
-The active tab is tracked in a `Map` via `chrome.tabs.onActivated`, because a new
-tab steals focus before we can look. `tab.lastAccessed` can't stand in for it —
-Chrome bumps that on tab *creation* too — so it's only a cold-start fallback for
-a service worker that just woke up.
+The active tab is tracked via `chrome.tabs.onActivated`, because a new tab steals
+focus before we can look. `tab.lastAccessed` can't stand in for it — Chrome bumps
+that on tab *creation* too, so a background tab opened a second ago outranks the
+one you're reading.
+
+Two activations are kept per window, not one: opening a saved tab group focuses
+one of the group's own tabs, so by the time the group event arrives the "current
+tab" is often a member of the group being placed, and the anchor is the one
+before it. The pair is mirrored into `chrome.storage.session`, since the service
+worker is unloaded after ~30s idle and opening a saved group is exactly what
+wakes it — without that, the path that most needs an anchor would never have one.
+
+`test.mjs` does not cover the worker being unloaded and rehydrating: killing the
+service worker also takes away the only context the harness can create tab groups
+from. That path is reasoned, not measured.
 
 ## Tests
 
