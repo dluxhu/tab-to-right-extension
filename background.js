@@ -95,13 +95,19 @@ const GROUP_FILL_MS = 400;
 // 'right' moves the whole group next to the current tab.
 const DEFAULTS = { stackLinks: true, groupPlacement: 'end' };
 let settings = { ...DEFAULTS };
+// Keys the user changed while the initial read below was still in flight: the
+// read lands afterwards and would otherwise revert them for the worker's lifetime.
+const changedEarly = new Set();
+
 // A cold-started service worker can get its first event before this resolves —
 // opening a saved group is exactly the kind of thing that wakes it — so handlers
 // await this instead of silently reading the defaults.
 // The catch matters: every handler awaits this, so a rejection would disable the
 // extension for the worker's lifetime instead of falling back to the defaults.
 const settingsReady = chrome.storage.local.get(DEFAULTS)
-  .then(s => { settings = s; })
+  .then(stored => {
+    for (const [k, v] of Object.entries(stored)) if (!changedEarly.has(k)) settings[k] = v;
+  })
   .catch(err => console.log('[dLux TabToRight] settings unreadable, using defaults', err));
 
 // Everything a cold-started worker needs before it can judge anything.
@@ -117,7 +123,10 @@ const anchorIn = (winId, candidates) =>
     .find(Boolean);
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
-  for (const [k, { newValue }] of Object.entries(changes)) settings[k] = newValue;
+  for (const [k, { newValue }] of Object.entries(changes)) {
+    changedEarly.add(k);
+    settings[k] = newValue ?? DEFAULTS[k]; // a removed key means the default, not undefined
+  }
 });
 
 // No popup: clicking the toolbar icon opens the options.
@@ -212,9 +221,15 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   // The restore backstop the per-tab path has, because onStartup can lose the race
   // with the first restored tabs. Not the burst guard, though: a group opening is
   // itself a burst of creations, so that would refuse every group of three or more.
-  // ponytail: leans on Chrome restoring group tabs lazily. A restored one-tab group
-  // that isn't discarded rides on the hush alone.
-  if (groupTabs.some(t => t.discarded)) {
+  //
+  // every, not some, and that distinction carries the feature: opening a saved
+  // group focuses one of its tabs, so at least one of them is always loaded,
+  // whereas a group restored into a background window is discarded throughout.
+  // Under `some`, a saved group whose other tabs load lazily would never be placed
+  // — the option silently dead, and no test here could see it, because the suite
+  // fabricates its groups with chrome.tabs.create.
+  // ponytail: the hush is the real restore guard; this is belt and braces.
+  if (groupTabs.every(t => t.discarded)) {
     console.log('[dLux TabToRight] group skipped: discarded (session restore)');
     return;
   }
