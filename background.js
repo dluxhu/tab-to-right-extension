@@ -20,39 +20,66 @@
 const lastActiveByWindow = new Map();
 const prevActiveByWindow = new Map();
 
-// Mirrored into session storage, because the maps alone don't survive the
-// service worker being unloaded after ~30s idle — and opening a saved tab group
-// is exactly the sort of event that wakes it, so on the path that needs an anchor
-// most there would otherwise be nothing to anchor to.
+// Mirrored into session storage, because the maps alone don't survive the service
+// worker being unloaded after ~30s idle — and opening a saved tab group is exactly
+// the sort of event that wakes it, so on the path that needs an anchor most there
+// would otherwise be nothing to anchor to. Undefined on a build without it, in
+// which case tracking is simply in-memory again.
 const ACTIVE_KEY = 'activeByWindow';
-const persistActive = () => chrome.storage.session.set({
-  [ACTIVE_KEY]: Object.fromEntries(
-    [...lastActiveByWindow].map(([w, id]) => [w, [id, prevActiveByWindow.get(w)]])),
-}).catch(() => {});
+const sessionArea = chrome.storage.session;
 
+let hydrated = false;
+const queuedActivations = [];
+
+function recordActivation(winId, tabId) {
+  const current = lastActiveByWindow.get(winId);
+  if (current !== undefined && current !== tabId) prevActiveByWindow.set(winId, current);
+  lastActiveByWindow.set(winId, tabId);
+}
+
+function persistActive() {
+  if (!hydrated) return; // never write over the saved pairs before reading them
+  sessionArea?.set({
+    [ACTIVE_KEY]: Object.fromEntries(
+      [...lastActiveByWindow].map(([w, id]) => [w, [id, prevActiveByWindow.get(w)]])),
+  }).catch(() => {});
+}
+
+// Activations arriving before the rehydrate are queued rather than applied, then
+// replayed on top of it. Merging the two live would drop the shift into
+// prevActiveByWindow for exactly the event this feature exists to survive: the
+// group's own tab taking focus on a cold worker.
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
-  const current = lastActiveByWindow.get(windowId);
-  if (current !== undefined && current !== tabId) prevActiveByWindow.set(windowId, current);
-  lastActiveByWindow.set(windowId, tabId);
+  if (!hydrated) {
+    queuedActivations.push([windowId, tabId]);
+    return;
+  }
+  recordActivation(windowId, tabId);
   persistActive();
 });
 
-// Rehydrate, then fill any window session storage knew nothing about from the
-// live active tab. Never overwrite: what onActivated has already recorded in this
-// worker's lifetime is newer than either source.
-const activeReady = chrome.storage.session.get(ACTIVE_KEY)
-  .then(({ [ACTIVE_KEY]: saved }) => {
-    for (const [w, [current, previous]] of Object.entries(saved || {})) {
+const activeReady = Promise.resolve()
+  .then(() => sessionArea?.get(ACTIVE_KEY))
+  .then(saved => {
+    for (const [w, [current, previous]] of Object.entries(saved?.[ACTIVE_KEY] || {})) {
       const winId = Number(w);
-      if (current !== undefined && !lastActiveByWindow.has(winId)) lastActiveByWindow.set(winId, current);
-      if (previous !== undefined && !prevActiveByWindow.has(winId)) prevActiveByWindow.set(winId, previous);
+      if (current !== undefined) lastActiveByWindow.set(winId, current);
+      if (previous !== undefined) prevActiveByWindow.set(winId, previous);
     }
   })
+  .catch(err => console.log('[dLux TabToRight] no saved active-tab history', err))
+  // Independently of the above: fill in any window it knew nothing about.
   .then(() => chrome.tabs.query({ active: true }))
   .then(tabs => {
     for (const t of tabs) if (!lastActiveByWindow.has(t.windowId)) lastActiveByWindow.set(t.windowId, t.id);
   })
-  .catch(err => console.log('[dLux TabToRight] could not restore the active-tab history', err));
+  .catch(err => console.log('[dLux TabToRight] could not read the active tabs', err))
+  .then(() => {
+    hydrated = true;
+    for (const [winId, tabId] of queuedActivations) recordActivation(winId, tabId);
+    queuedActivations.length = 0;
+    persistActive();
+  });
 
 // Time to let a new tab's index and group membership settle before we act.
 // ponytail: fixed delay tuned by eye; the group signals below no longer depend on
@@ -79,6 +106,15 @@ const settingsReady = chrome.storage.local.get(DEFAULTS)
 
 // Everything a cold-started worker needs before it can judge anything.
 const ready = Promise.all([settingsReady, activeReady]);
+
+// The tab the user was on, out of the candidates given. The most recent
+// activation, or the one before it when the most recent is itself excluded —
+// which is what happens when a new tab or an opening group takes focus first.
+// Only ever called after `ready`, so the history is complete.
+const anchorIn = (winId, candidates) =>
+  [lastActiveByWindow.get(winId), prevActiveByWindow.get(winId)]
+    .map(id => candidates.find(t => t.id === id))
+    .find(Boolean);
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   for (const [k, { newValue }] of Object.entries(changes)) settings[k] = newValue;
@@ -149,12 +185,7 @@ function groupOpening(winId, tab, tabCreatedAt) {
 chrome.tabGroups.onCreated.addListener(async (group) => {
   const winId = group.windowId;
   groupOpenedAt.set(winId, { at: Date.now(), groupId: group.id });
-  // Read before anything else steals focus; the group may already hold one. On a
-  // cold worker both are empty until the rehydrate lands, so ask again after.
-  const readAnchors = () => [lastActiveByWindow.get(winId), prevActiveByWindow.get(winId)];
-  let anchors = readAnchors();
   await ready;
-  if (!anchors.some(id => id !== undefined)) anchors = readAnchors();
   console.log('[dLux TabToRight] group created', { id: group.id, winId, placement: settings.groupPlacement });
   if (settings.groupPlacement !== 'right') return;
 
@@ -204,9 +235,9 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   // has already taken focus. No lastAccessed fallback here — Chrome bumps it on
   // tab *creation*, so the group's own fresh tabs would outrank the real anchor.
   // Nothing to anchor to means leaving the group where Chrome put it.
-  const ref = anchors.map(id => others.find(t => t.id === id)).find(Boolean);
+  const ref = anchorIn(winId, others);
   if (!ref) {
-    console.log('[dLux TabToRight] group skipped: no reference tab', anchors);
+    console.log('[dLux TabToRight] group skipped: no reference tab outside the group');
     return;
   }
   // Land after the whole of the reference's own group, never in the middle of it
@@ -227,8 +258,6 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
 
   const winId = newTab.windowId;
   const createdAt = Date.now();
-  // Capture before the new tab's own onActivated overwrites it.
-  const prevActiveId = lastActiveByWindow.get(winId);
   recentCreates(winId).push(createdAt);
   for (const [id, at] of newTabAt) if (createdAt - at > NEW_TAB_MS) newTabAt.delete(id);
   newTabAt.set(newTab.id, createdAt);
@@ -315,19 +344,22 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
   const others = allTabs.filter(t => t.id !== tab.id);
   if (others.length === 0) return; // new window's only tab
 
-  // Links sit next to the page they were opened from. Cmd+T uses the previous
-  // active tab. lastAccessed is only a service-worker cold-start fallback.
+  // Links sit next to the page they were opened from. Everything else goes beside
+  // the tab the user was on — `others` excludes this new tab, so a tab that stole
+  // focus resolves to the activation before it.
   let ref = !nearEnd && tab.openerTabId
     ? others.find(t => t.id === tab.openerTabId)
     : undefined;
-  if (!ref) ref = others.find(t => t.id === prevActiveId);
+  const viaOpener = !!ref;
+  if (!ref) ref = anchorIn(winId, others);
   if (!ref) {
+    // Nothing tracked at all: the least-bad guess left.
     others.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
     ref = others[0];
   }
   console.log('[dLux TabToRight] reference', {
     id: ref.id, index: ref.index, groupId: ref.groupId,
-    via: ref.id === tab.openerTabId ? 'opener' : ref.id === prevActiveId ? 'active' : 'lastAccessed'
+    via: viaOpener ? 'opener' : anchorIn(winId, others) ? 'active' : 'lastAccessed'
   });
 
   // Move it just right of the reference; grouping is best-effort so a failure
