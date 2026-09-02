@@ -172,7 +172,26 @@ async function coreChecks({ inSW, strip }, tag = '') {
   check('single new tab moves next to active tab' + tag,
         at >= 0 && !!s[at + 1] && s[at + 1].endsWith('*'), s.join(' '));
 
-  // 2. A burst (session restore, open-all-bookmarks) is left alone.
+  // 2. Two new tabs in quick succession, inside one settle delay. The second must
+  //    anchor on the first, not the first on the second — otherwise neither moves
+  //    and both are left at the end.
+  await sleep(1200);
+  await inSW(`await chrome.tabs.update(${mid}, { active: true });`);
+  await sleep(600);
+  const pair = await inSW(`
+    const a = await chrome.tabs.create({ url:'about:blank' });
+    await new Promise(r => setTimeout(r, 80));
+    const b = await chrome.tabs.create({ url:'about:blank' });
+    return [a.id, b.id];
+  `);
+  await sleep(1600);
+  s = await strip();
+  const seat = slotOf(s, mid);
+  check('two quick new tabs both land beside the current tab' + tag,
+        seat >= 0 && slotOf(s, pair[0]) === seat + 1 && slotOf(s, pair[1]) === seat + 2,
+        `after: ${s.join(' ')}\n      current tab ${mid} at ${seat}, new tabs ${pair}`);
+
+  // 3. A burst (session restore, open-all-bookmarks) is left alone.
   await sleep(1200);
   const before = await strip();
   const burst = await inSW(`
@@ -186,7 +205,7 @@ async function coreChecks({ inSW, strip }, tag = '') {
   check('burst of 4 stays appended in order' + tag, JSON.stringify(tail) === JSON.stringify(burst),
         `before: ${before.join(' ')}\n      after:  ${s.join(' ')}\n      expected tail ${burst}, got ${tail}`);
 
-  // 3. A tab Chrome groups on its own, mid-strip: one member of a group opening.
+  // 4. A tab Chrome groups on its own, mid-strip: one member of a group opening.
   await sleep(1200);
   const gIdx = 2;
   const g = await inSW(`
@@ -199,7 +218,7 @@ async function coreChecks({ inSW, strip }, tag = '') {
   check('Chrome-grouped tab keeps its slot and its group' + tag, s[gIdx] === `${gIdx}:${g.id}G${g.gid}`,
         `after: ${s.join(' ')}\n      expected ${gIdx}:${g.id}G${g.gid} at ${gIdx}`);
 
-  // 4. A pinned tab is never reshuffled.
+  // 5. A pinned tab is never reshuffled.
   await sleep(1200);
   const pBefore = await strip();
   const p = await inSW(`return (await chrome.tabs.create({ url:'about:blank', active:false, pinned:true, index:0 })).id;`);
@@ -208,7 +227,7 @@ async function coreChecks({ inSW, strip }, tag = '') {
   check('pinned tab stays where it was pinned' + tag, s[0] === `0:${p}P`,
         `before: ${pBefore.join(' ')}\n      after:  ${s.join(' ')}`);
 
-  // 5. Default placement leaves an opening two-tab group at the end, intact.
+  // 6. Default placement leaves an opening two-tab group at the end, intact.
   await sleep(1200);
   await inSW(`await chrome.tabs.update(${mid}, { active: true });`);
   await sleep(500);

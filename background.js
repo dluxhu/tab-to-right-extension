@@ -179,7 +179,11 @@ function groupOpening(winId, tab, tabCreatedAt) {
   if (!g || Date.now() - g.at >= GROUP_OPENING_MS) return false;
   // Its own group, not merely some group: a link opened from a tab that happens
   // to sit in an unrelated group is still a link, and still gets restacked.
-  return tab.groupId === g.groupId || tabCreatedAt <= g.at;
+  // The grace after g.at covers a group's later members, which are necessarily
+  // created after the group exists and may not be stamped yet. Deliberately the
+  // short fill window, not the full opening one: a new tab a second after you
+  // grouped some tabs by hand is a new tab, and should still be repositioned.
+  return tab.groupId === g.groupId || tabCreatedAt <= g.at + GROUP_FILL_MS;
 }
 
 chrome.tabGroups.onCreated.addListener(async (group) => {
@@ -258,6 +262,10 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
 
   const winId = newTab.windowId;
   const createdAt = Date.now();
+  // Read now, before this tab's own onActivated lands. A second new tab opened
+  // inside our settle delay would otherwise be the most recent activation, and
+  // this one would anchor on it — both then sit at the end of the strip.
+  const activeBefore = lastActiveByWindow.get(winId);
   recentCreates(winId).push(createdAt);
   for (const [id, at] of newTabAt) if (createdAt - at > NEW_TAB_MS) newTabAt.delete(id);
   newTabAt.set(newTab.id, createdAt);
@@ -351,7 +359,11 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     ? others.find(t => t.id === tab.openerTabId)
     : undefined;
   const viaOpener = !!ref;
-  if (!ref) ref = anchorIn(winId, others);
+  if (!ref && activeBefore !== undefined) ref = others.find(t => t.id === activeBefore);
+  // Cold worker: nothing was tracked yet when this tab was created, so use the
+  // rehydrated history — minus any tab at least as new as this one, for the same
+  // reason activeBefore is read early.
+  if (!ref) ref = anchorIn(winId, others.filter(t => (newTabAt.get(t.id) ?? -Infinity) < createdAt));
   if (!ref) {
     // Nothing tracked at all: the least-bad guess left.
     others.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
@@ -359,7 +371,7 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
   }
   console.log('[dLux TabToRight] reference', {
     id: ref.id, index: ref.index, groupId: ref.groupId,
-    via: viaOpener ? 'opener' : anchorIn(winId, others) ? 'active' : 'lastAccessed'
+    via: viaOpener ? 'opener' : ref.id === activeBefore ? 'active' : 'history'
   });
 
   // Move it just right of the reference; grouping is best-effort so a failure
