@@ -12,6 +12,9 @@ New
 - Clicking the toolbar icon opens the options.
 
 Fixed
+- With "next to my current tab" selected, a group you built yourself out of tabs
+  you already had was treated as a group opening and pulled over to your current
+  tab. It now stays where you built it.
 - Opening a saved tab group could still pull tabs out of it. The previous fix
   waited a fixed moment for Chrome to mark each tab as grouped, which it does not
   always do in time — so a group came apart or stayed intact at random. Groups

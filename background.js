@@ -39,7 +39,11 @@ let settings = { ...DEFAULTS };
 // A cold-started service worker can get its first event before this resolves —
 // opening a saved group is exactly the kind of thing that wakes it — so handlers
 // await this instead of silently reading the defaults.
-const settingsReady = chrome.storage.local.get(DEFAULTS).then(s => { settings = s; });
+// The catch matters: every handler awaits this, so a rejection would disable the
+// extension for the worker's lifetime instead of falling back to the defaults.
+const settingsReady = chrome.storage.local.get(DEFAULTS)
+  .then(s => { settings = s; })
+  .catch(err => console.log('[dLux TabToRight] settings unreadable, using defaults', err));
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   for (const [k, { newValue }] of Object.entries(changes)) settings[k] = newValue;
@@ -65,7 +69,11 @@ chrome.runtime.onStartup.addListener(() => {
 const BURST_MS = 700;
 const BURST_MIN = 3;
 const createTimes = new Map();
-const lastCreateAt = new Map();
+
+// When each tab was created, so a group can tell brand-new tabs from ones the
+// user already had. Pruned by age; a tab older than this is never "new".
+const NEW_TAB_MS = 30000;
+const newTabAt = new Map();
 function recentCreates(winId) {
   const now = Date.now();
   const times = (createTimes.get(winId) || []).filter(t => now - t < BURST_MS);
@@ -74,7 +82,6 @@ function recentCreates(winId) {
 }
 chrome.windows.onRemoved.addListener(winId => {
   createTimes.delete(winId);
-  lastCreateAt.delete(winId);
   lastActiveByWindow.delete(winId);
   groupOpenedAt.delete(winId);
 });
@@ -85,25 +92,27 @@ chrome.windows.onRemoved.addListener(winId => {
 // group is under the burst threshold, so groups came apart at random. This still
 // needs the event within the settle delay below, but that window is much wider
 // than the one it replaced, and the per-tab groupId check remains as a backstop.
-// ponytail: a group is only ever "opening" if brand-new tabs came with it. A
-// group must contain a tab, so a saved group's tabs always exist first; a group
-// the user made out of tabs they already had brings none.
-const groupOpenedAt = new Map(); // windowId -> { at, fromNewTabs }
-function groupOpening(winId) {
-  const g = groupOpenedAt.get(winId);
-  return !!g && g.fromNewTabs && Date.now() - g.at < GROUP_OPENING_MS;
+const groupOpenedAt = new Map(); // windowId -> when a group last appeared there
+
+// Is this new tab part of a group that is opening? Chrome doesn't promise an
+// order between tabs.onCreated and tabGroups.onCreated, so either shape of the
+// evidence counts: the tab is already stamped with a group, or it existed before
+// the group did. A tab created *after* a group appeared and still ungrouped is
+// just a new tab — Cmd+T straight after grouping some tabs by hand.
+function groupOpening(winId, tab, tabCreatedAt) {
+  const at = groupOpenedAt.get(winId);
+  if (at === undefined || Date.now() - at >= GROUP_OPENING_MS) return false;
+  return tab.groupId !== -1 || tabCreatedAt <= at;
 }
 
 chrome.tabGroups.onCreated.addListener(async (group) => {
   const winId = group.windowId;
-  const fromNewTabs = Date.now() - (lastCreateAt.get(winId) || 0) < GROUP_OPENING_MS;
-  groupOpenedAt.set(winId, { at: Date.now(), fromNewTabs });
+  groupOpenedAt.set(winId, Date.now());
   // Captured before the group's tabs steal focus.
   const prevActiveId = lastActiveByWindow.get(winId);
   await settingsReady;
-  console.log('[dLux TabToRight] group created', { id: group.id, winId, fromNewTabs, placement: settings.groupPlacement });
-  // Grouping tabs you already had is not a group opening: leave it where it is.
-  if (settings.groupPlacement !== 'right' || !fromNewTabs) return;
+  console.log('[dLux TabToRight] group created', { id: group.id, winId, placement: settings.groupPlacement });
+  if (settings.groupPlacement !== 'right') return;
 
   await new Promise(r => setTimeout(r, GROUP_FILL_MS));
   if (Date.now() < hushUntil) {
@@ -120,6 +129,14 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   }
   const groupTabs = allTabs.filter(t => t.groupId === group.id);
   if (groupTabs.length === 0) return; // gone again already
+
+  // Only a group that arrived with brand-new tabs is a group *opening*. One the
+  // user built out of tabs they already had belongs where they built it. Asked
+  // here, once the group has filled, so it doesn't depend on event ordering.
+  if (!groupTabs.some(t => newTabAt.has(t.id))) {
+    console.log('[dLux TabToRight] group skipped: built from tabs that already existed');
+    return;
+  }
 
   // Chrome appends an opening group at the end of the strip. A group the user
   // just made out of tabs they already had sits mid-strip — leave that alone.
@@ -156,10 +173,12 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
   if (!newTab || typeof newTab.id !== 'number') return;
 
   const winId = newTab.windowId;
+  const createdAt = Date.now();
   // Capture before the new tab's own onActivated overwrites it.
   const prevActiveId = lastActiveByWindow.get(winId);
-  recentCreates(winId).push(Date.now());
-  lastCreateAt.set(winId, Date.now());
+  recentCreates(winId).push(createdAt);
+  for (const [id, at] of newTabAt) if (createdAt - at > NEW_TAB_MS) newTabAt.delete(id);
+  newTabAt.set(newTab.id, createdAt);
   console.log('[dLux TabToRight] onCreated', {
     id: newTab.id, index: newTab.index, url: newTab.pendingUrl || newTab.url || '',
     openerTabId: newTab.openerTabId, groupId: newTab.groupId, active: newTab.active
@@ -224,7 +243,7 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
   // or not Chrome has stamped its groupId yet. The group handler above decides
   // where the whole group goes; never move its tabs one at a time. Checked here,
   // after the query, to give the group event as long as possible to arrive.
-  if (groupOpening(winId)) {
+  if (groupOpening(winId, tab, createdAt)) {
     console.log('[dLux TabToRight] skipped: a tab group is opening in this window');
     return;
   }
