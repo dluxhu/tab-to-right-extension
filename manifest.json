@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "dLux Open New Tab To The Right",
+  "name": "dLux Open New Tab To The Right or Below",
   "version": "1.3.0",
-  "description": "New tabs open to the right of your current tab. Options for link clicks and for where saved tab groups open.",
+  "description": "New tabs open next to your current tab — to the right, or below in a vertical tab strip. Options for links and groups.",
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Open New Tab To The Right — options"
+    "default_title": "Open New Tab To The Right or Below — options"
   },
   "permissions": [
     "tabs",

@@ -1,4 +1,4 @@
-// dLux Open New Tab To The Right - Chrome Extension
+// dLux Open New Tab To The Right or Below - Chrome Extension
 // Cmd+T and other "new tab" actions (Chrome appends those at the end of the
 // strip) open immediately to the right of the current tab. Optionally, link
 // clicks do too — newest always immediately to the right of the source tab
@@ -36,7 +36,10 @@ const GROUP_FILL_MS = 400;
 // 'right' moves the whole group next to the current tab.
 const DEFAULTS = { stackLinks: true, groupPlacement: 'end' };
 let settings = { ...DEFAULTS };
-chrome.storage.local.get(DEFAULTS).then(s => { settings = s; });
+// A cold-started service worker can get its first event before this resolves —
+// opening a saved group is exactly the kind of thing that wakes it — so handlers
+// await this instead of silently reading the defaults.
+const settingsReady = chrome.storage.local.get(DEFAULTS).then(s => { settings = s; });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   for (const [k, { newValue }] of Object.entries(changes)) settings[k] = newValue;
@@ -62,6 +65,7 @@ chrome.runtime.onStartup.addListener(() => {
 const BURST_MS = 700;
 const BURST_MIN = 3;
 const createTimes = new Map();
+const lastCreateAt = new Map();
 function recentCreates(winId) {
   const now = Date.now();
   const times = (createTimes.get(winId) || []).filter(t => now - t < BURST_MS);
@@ -70,25 +74,36 @@ function recentCreates(winId) {
 }
 chrome.windows.onRemoved.addListener(winId => {
   createTimes.delete(winId);
+  lastCreateAt.delete(winId);
   lastActiveByWindow.delete(winId);
   groupOpenedAt.delete(winId);
 });
 
-// A group appearing in a window is the reliable signal that a saved tab group is
-// opening. Chrome stamps each tab's own groupId a beat later and not always
-// within our settle delay — waiting on that raced, and a two-tab group is under
-// the burst threshold, so groups came apart at random. This event doesn't race:
-// any tab created in the window right after it belongs to the group.
-const groupOpenedAt = new Map();
-const groupOpening = winId => Date.now() - (groupOpenedAt.get(winId) || 0) < GROUP_OPENING_MS;
+// A group appearing in a window is a far better signal that a saved tab group is
+// opening than each tab's own groupId, which Chrome stamps a beat later and not
+// always within our settle delay — waiting on that raced badly, and a two-tab
+// group is under the burst threshold, so groups came apart at random. This still
+// needs the event within the settle delay below, but that window is much wider
+// than the one it replaced, and the per-tab groupId check remains as a backstop.
+// ponytail: a group is only ever "opening" if brand-new tabs came with it. A
+// group must contain a tab, so a saved group's tabs always exist first; a group
+// the user made out of tabs they already had brings none.
+const groupOpenedAt = new Map(); // windowId -> { at, fromNewTabs }
+function groupOpening(winId) {
+  const g = groupOpenedAt.get(winId);
+  return !!g && g.fromNewTabs && Date.now() - g.at < GROUP_OPENING_MS;
+}
 
 chrome.tabGroups.onCreated.addListener(async (group) => {
   const winId = group.windowId;
-  groupOpenedAt.set(winId, Date.now());
+  const fromNewTabs = Date.now() - (lastCreateAt.get(winId) || 0) < GROUP_OPENING_MS;
+  groupOpenedAt.set(winId, { at: Date.now(), fromNewTabs });
   // Captured before the group's tabs steal focus.
   const prevActiveId = lastActiveByWindow.get(winId);
-  console.log('[dLux TabToRight] group created', { id: group.id, winId, placement: settings.groupPlacement });
-  if (settings.groupPlacement !== 'right') return;
+  await settingsReady;
+  console.log('[dLux TabToRight] group created', { id: group.id, winId, fromNewTabs, placement: settings.groupPlacement });
+  // Grouping tabs you already had is not a group opening: leave it where it is.
+  if (settings.groupPlacement !== 'right' || !fromNewTabs) return;
 
   await new Promise(r => setTimeout(r, GROUP_FILL_MS));
   if (Date.now() < hushUntil) {
@@ -113,16 +128,25 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
     return;
   }
 
-  const ref = allTabs.find(t => t.id === prevActiveId && t.groupId !== group.id);
+  const others = allTabs.filter(t => t.groupId !== group.id);
+  let ref = others.find(t => t.id === prevActiveId);
+  if (!ref) {
+    // Cold start: lastActiveByWindow hasn't been repopulated yet.
+    others.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+    ref = others[0];
+  }
   if (!ref) {
     console.log('[dLux TabToRight] group skipped: no reference tab');
     return;
   }
-  // A group can't start inside the pinned strip.
-  const index = Math.max(ref.index + 1, allTabs.filter(t => t.pinned).length);
+  // Land after the whole of the reference's own group, never in the middle of it
+  // (tabGroups.move refuses that), and never inside the pinned strip.
+  const after = ref.groupId === -1 ? ref
+    : allTabs.filter(t => t.groupId === ref.groupId).reduce((a, b) => (a.index > b.index ? a : b));
+  const index = Math.max(after.index + 1, allTabs.filter(t => t.pinned).length);
   try {
     await chrome.tabGroups.move(group.id, { index });
-    console.log('[dLux TabToRight] moved group', group.id, 'to', index, 'after', ref.id);
+    console.log('[dLux TabToRight] moved group', group.id, 'to', index, 'after', after.id);
   } catch (err) {
     console.log('[dLux TabToRight] group move failed', err?.message || err);
   }
@@ -135,6 +159,7 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
   // Capture before the new tab's own onActivated overwrites it.
   const prevActiveId = lastActiveByWindow.get(winId);
   recentCreates(winId).push(Date.now());
+  lastCreateAt.set(winId, Date.now());
   console.log('[dLux TabToRight] onCreated', {
     id: newTab.id, index: newTab.index, url: newTab.pendingUrl || newTab.url || '',
     openerTabId: newTab.openerTabId, groupId: newTab.groupId, active: newTab.active
@@ -150,13 +175,7 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     return;
   }
 
-  // A group is opening in this window, so this tab is one of its members —
-  // whether or not Chrome has stamped its groupId yet. The group handler above
-  // decides where the whole group goes; never move its tabs one at a time.
-  if (groupOpening(winId)) {
-    console.log('[dLux TabToRight] skipped: a tab group is opening in this window');
-    return;
-  }
+  await settingsReady;
 
   // Checked after the settle so every tab of a burst sees the others' timestamps.
   if (recentCreates(winId).length >= BURST_MIN) {
@@ -198,6 +217,15 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     allTabs = await chrome.tabs.query({ windowId: winId });
   } catch (e) {
     console.log('[dLux TabToRight] query failed', e);
+    return;
+  }
+
+  // A group is opening in this window, so this tab is one of its members — whether
+  // or not Chrome has stamped its groupId yet. The group handler above decides
+  // where the whole group goes; never move its tabs one at a time. Checked here,
+  // after the query, to give the group event as long as possible to arrive.
+  if (groupOpening(winId)) {
+    console.log('[dLux TabToRight] skipped: a tab group is opening in this window');
     return;
   }
 

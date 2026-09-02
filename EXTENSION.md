@@ -8,7 +8,7 @@ then paste the text below into the listing.
 
 Open new tabs where you're working — not at the far end of a long tab strip.
 
-dLux Open New Tab To The Right quietly repositions tabs created with Cmd+T / Ctrl+T, the + button, or the New Tab menu so they appear immediately to the right of the tab you were just using.
+dLux Open New Tab To The Right or Below quietly repositions tabs created with Cmd+T / Ctrl+T, the + button, or the New Tab menu so they appear immediately next to the tab you were just using — to the right in the normal tab strip, below in the vertical one.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 WHAT IT DOES
@@ -20,6 +20,7 @@ WHAT IT DOES
 • Keeps every link you open in a new tab immediately to the right of the tab you clicked from, so the newest one is always the nearest. Chrome normally puts the second link after the first, pushing it further away each time. Optional — on by default.
 • Opens saved tab groups either at the end of the tab strip or next to your current tab, whichever you prefer. The group moves as a whole and stays a group.
 • If your current tab is in a group, the new tab joins that group
+• Works with the vertical tab strip as well as the normal one
 • Works in Incognito (spanning)
 • Two optional settings, sensible defaults — install and go
 
@@ -93,6 +94,9 @@ CHANGES
 ## 1.3.0 — 2026-09-02
 
 New
+- Renamed to "dLux Open New Tab To The Right or Below": in the vertical tab
+  strip, next to your current tab means below it. Tab positions are the same in
+  both strips, so nothing needed adapting, and the vertical strip now has a test.
 - Option: choose whether a saved tab group opens at the end of the tab strip
   (Chrome's default) or next to your current tab. Either way the group moves as
   a whole and stays a group.

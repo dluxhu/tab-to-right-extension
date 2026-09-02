@@ -3,6 +3,9 @@
 ## 1.3.0 — 2026-09-02
 
 New
+- Renamed to "dLux Open New Tab To The Right or Below": in the vertical tab
+  strip, next to your current tab means below it. Tab positions are the same in
+  both strips, so nothing needed adapting, and the vertical strip now has a test.
 - Option: choose whether a saved tab group opens at the end of the tab strip
   (Chrome's default) or next to your current tab. Either way the group moves as
   a whole and stays a group.

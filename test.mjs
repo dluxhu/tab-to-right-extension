@@ -9,7 +9,7 @@
 // be opened from it. So the group-placement setting is seeded by launching a
 // second copy of the extension with its DEFAULTS patched.
 import { spawn } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,19 +17,30 @@ const EXT = process.argv[2] || process.cwd();
 const CHROME = process.env.CHROME || join(process.env.HOME, '.cache/puppeteer/chrome/mac_arm-150.0.7871.24/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// Slot of a tab in a strip line-up, matched on the whole id: the entries look
+// like `index:id[P][Gn][*]`, so a prefix match would confuse 12 with 120.
+const slotOf = (strip, id) => strip.findIndex(x => Number(x.match(/^\d+:(\d+)/)[1]) === id);
+
 let failures = 0;
 function check(name, cond, detail) {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '\n      ' + detail}`);
   if (!cond) failures++;
 }
 
-async function withChrome(extDir, fn) {
+async function withChrome(extDir, fn, { headless = true, prefs, features } = {}) {
   const port = 9000 + Math.floor(Math.random() * 1000);
+  const udd = mkdtempSync(join(tmpdir(), 'cft-'));
+  if (prefs) {
+    mkdirSync(join(udd, 'Default'), { recursive: true });
+    writeFileSync(join(udd, 'Default', 'Preferences'), JSON.stringify(prefs));
+  }
   const proc = spawn(CHROME, [
-    `--user-data-dir=${mkdtempSync(join(tmpdir(), 'cft-'))}`,
+    `--user-data-dir=${udd}`,
     `--remote-debugging-port=${port}`,
     `--load-extension=${extDir}`, `--disable-extensions-except=${extDir}`,
-    '--no-first-run', '--no-default-browser-check', '--headless=new',
+    '--no-first-run', '--no-default-browser-check', '--window-size=1200,900',
+    ...(features ? [`--enable-features=${features}`] : []),
+    ...(headless ? ['--headless=new'] : []),
     'about:blank',
   ], { stdio: 'ignore' });
 
@@ -47,6 +58,14 @@ async function withChrome(extDir, fn) {
         const v = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
         ws = new WebSocket(v.webSocketDebuggerUrl);
         await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
+        // A crashed or killed browser must not leave callers awaiting forever.
+        const abort = why => {
+          const err = new Error(`CDP connection ${why}`);
+          for (const { rej } of pending.values()) rej(err);
+          pending.clear();
+        };
+        ws.onclose = () => abort('closed');
+        ws.onerror = () => abort('errored');
         ws.onmessage = e => {
           const m = JSON.parse(e.data);
           const p = pending.get(m.id);
@@ -86,11 +105,31 @@ async function withChrome(extDir, fn) {
         .map(t => \`\${t.index}:\${t.id}\${t.pinned?'P':''}\${t.groupId!==-1?'G'+t.groupId:''}\${t.active?'*':''}\`);
     `);
 
+    // Viewport width of a normal tab: a vertical tab strip eats into it, which is
+    // how the vertical phase proves the strip really switched.
+    const pageWidth = async () => {
+      const { targetInfos } = await send('Target.getTargets');
+      const pages = targetInfos.filter(t => t.type === 'page');
+      // -1 fails the check that uses this; throwing here would take the summary with it.
+      if (pages.length !== 1) {
+        console.log(`  (cannot measure: expected exactly one page, saw ${pages.length})`);
+        return -1;
+      }
+      const sid = (await send('Target.attachToTarget', { targetId: pages[0].targetId, flatten: true })).sessionId;
+      const r = await send('Runtime.evaluate', { expression: 'window.innerWidth', returnByValue: true }, sid);
+      return r.result?.value ?? -1;
+    };
+
     console.log('waiting out the startup hush...');
     await sleep(9000);
-    await fn({ inSW, strip });
+    await fn({ inSW, strip, pageWidth });
   } finally {
     proc.kill();
+    await Promise.race([
+      new Promise(r => proc.once('exit', r)),
+      sleep(5000),
+    ]);
+    rmSync(udd, { recursive: true, force: true });
   }
 }
 
@@ -122,7 +161,7 @@ const openGroup = inSW => inSW(`
   return { ids: [a.id, b.id], gid };
 `);
 
-await withChrome(EXT, async ({ inSW, strip }) => {
+async function coreChecks({ inSW, strip }, tag = '') {
   const mid = await layout({ inSW, strip });
   let s;
 
@@ -130,8 +169,8 @@ await withChrome(EXT, async ({ inSW, strip }) => {
   await inSW(`await chrome.tabs.create({ url:'about:blank' });`);
   await sleep(900);
   s = await strip();
-  const at = s.findIndex(x => x.split(':')[1].startsWith(String(mid)));
-  check('single new tab moves next to active tab', s[at + 1].endsWith('*'), s.join(' '));
+  const at = slotOf(s, mid);
+  check('single new tab moves next to active tab' + tag, s[at + 1].endsWith('*'), s.join(' '));
 
   // 2. A burst (session restore, open-all-bookmarks) is left alone.
   await sleep(1200);
@@ -144,7 +183,7 @@ await withChrome(EXT, async ({ inSW, strip }) => {
   await sleep(1400);
   s = await strip();
   const tail = s.slice(-4).map(x => Number(x.split(':')[1].replace(/\D.*/, '')));
-  check('burst of 4 stays appended in order', JSON.stringify(tail) === JSON.stringify(burst),
+  check('burst of 4 stays appended in order' + tag, JSON.stringify(tail) === JSON.stringify(burst),
         `before: ${before.join(' ')}\n      after:  ${s.join(' ')}\n      expected tail ${burst}, got ${tail}`);
 
   // 3. A tab Chrome groups on its own, mid-strip: one member of a group opening.
@@ -157,7 +196,7 @@ await withChrome(EXT, async ({ inSW, strip }) => {
   `);
   await sleep(1400);
   s = await strip();
-  check('Chrome-grouped tab keeps its slot and its group', s[gIdx] === `${gIdx}:${g.id}G${g.gid}`,
+  check('Chrome-grouped tab keeps its slot and its group' + tag, s[gIdx] === `${gIdx}:${g.id}G${g.gid}`,
         `after: ${s.join(' ')}\n      expected ${gIdx}:${g.id}G${g.gid} at ${gIdx}`);
 
   // 4. A pinned tab is never reshuffled.
@@ -166,7 +205,7 @@ await withChrome(EXT, async ({ inSW, strip }) => {
   const p = await inSW(`return (await chrome.tabs.create({ url:'about:blank', active:false, pinned:true, index:0 })).id;`);
   await sleep(1400);
   s = await strip();
-  check('pinned tab stays where it was pinned', s[0] === `0:${p}P`,
+  check('pinned tab stays where it was pinned' + tag, s[0] === `0:${p}P`,
         `before: ${pBefore.join(' ')}\n      after:  ${s.join(' ')}`);
 
   // 5. Default placement leaves an opening two-tab group at the end, intact.
@@ -176,10 +215,12 @@ await withChrome(EXT, async ({ inSW, strip }) => {
   const ga = await openGroup(inSW);
   await sleep(1800);
   s = await strip();
-  check('two-tab group stays at the end, intact',
+  check('two-tab group stays at the end, intact' + tag,
         s.slice(-2).join(' ') === `${s.length - 2}:${ga.ids[0]}G${ga.gid} ${s.length - 1}:${ga.ids[1]}G${ga.gid}`,
         `after: ${s.join(' ')}\n      expected tail ${ga.ids[0]}G${ga.gid} ${ga.ids[1]}G${ga.gid}`);
-});
+}
+
+await withChrome(EXT, api => coreChecks(api));
 
 // 6. With groupPlacement 'right', the whole group moves and stays a group.
 const alt = mkdtempSync(join(tmpdir(), 'ext-right-'));
@@ -198,12 +239,62 @@ await withChrome(alt, async ({ inSW, strip }) => {
   await sleep(1000);
   const gb = await openGroup(inSW);
   await sleep(2000);
-  const s = await strip();
-  const at = s.findIndex(x => x.split(':')[1].startsWith(String(mid)));
+  let s = await strip();
+  const at = slotOf(s, mid);
   check('group moves next to the current tab as one piece',
         s[at + 1] === `${at + 1}:${gb.ids[0]}G${gb.gid}` && s[at + 2] === `${at + 2}:${gb.ids[1]}G${gb.gid}`,
         `after: ${s.join(' ')}\n      current tab ${mid} at ${at}, expected ${gb.ids[0]}G${gb.gid} then ${gb.ids[1]}G${gb.gid}`);
+
+  // 7. Grouping tabs you already had is not a group opening, so even on 'right'
+  //    the group must stay exactly where the user built it.
+  await sleep(1200);
+  await inSW(`await chrome.tabs.update(${mid}, { active: true });`);
+  await sleep(500);
+  const t1 = await inSW(`return (await chrome.tabs.create({ url:'about:blank', active:false })).id;`);
+  await sleep(1000);
+  const t2 = await inSW(`return (await chrome.tabs.create({ url:'about:blank', active:false })).id;`);
+  await sleep(2400); // long enough that these no longer count as brand new
+  const before = await strip();
+  const gid = await inSW(`return await chrome.tabs.group({ tabIds: [${t1}, ${t2}] });`);
+  await sleep(1800);
+  s = await strip();
+  check('a group built from existing tabs stays where it was',
+        slotOf(s, t1) === slotOf(before, t1) && slotOf(s, t2) === slotOf(before, t2),
+        `before: ${before.join(' ')}\n      after:  ${s.join(' ')}\n      group ${gid}`);
+
+  // 8. ...and the next new tab is still repositioned, rather than being written
+  //    off as part of a group that is opening.
+  await sleep(1200);
+  const t3 = await inSW(`return (await chrome.tabs.create({ url:'about:blank' })).id;`);
+  await sleep(1000);
+  s = await strip();
+  check('a new tab straight after grouping is still moved',
+        slotOf(s, t3) === slotOf(s, mid) + 1,
+        `after: ${s.join(' ')}\n      current tab ${mid} at ${slotOf(s, mid)}, new tab ${t3} at ${slotOf(s, t3)}`);
 });
+
+// 7. The vertical tab strip. Headful only — headless draws no browser UI at all,
+//    so the strip can't switch there. VERTICAL=1 node test.mjs to include it.
+if (process.env.VERTICAL) {
+  const VERT = { headless: false, features: 'VerticalTabs,VerticalTabsLaunch' };
+  // Baseline: plain headful Chrome with the feature off entirely, so the strip is
+  // certainly horizontal. Measured at the same point in startup as the run below.
+  let flat = 0;
+  await withChrome(EXT, async ({ pageWidth }) => { flat = await pageWidth(); }, { headless: false });
+
+  await withChrome(EXT, async (api) => {
+    const wide = await api.pageWidth();
+    console.log(`viewport width: ${flat}px with the normal strip, ${wide}px with the vertical one`);
+    const on = wide > 0 && flat - wide >= 30;
+    check('vertical tab strip is actually on', on,
+          `viewport is ${wide}px with the pref on vs ${flat}px without it; a side strip takes a bite out of the width, a collapsed one a small bite, none at all means the pref did not apply`);
+    // Never report vertical passes that were measured against a horizontal strip.
+    if (!on) return;
+    await coreChecks(api, ' (vertical tab strip)');
+  }, { ...VERT, prefs: { vertical_tabs: { enabled: true } } });
+}
+
+rmSync(alt, { recursive: true, force: true });
 
 console.log(failures ? `\n${failures} failing` : '\nall green');
 process.exit(failures ? 1 : 0);

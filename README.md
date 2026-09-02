@@ -1,7 +1,10 @@
-# dLux Open New Tab To The Right
+# dLux Open New Tab To The Right or Below
 
 Chrome extension that opens new tabs next to the tab you're working in, instead
-of at the far end of the strip.
+of at the far end of the strip. "Next to" means to the right in Chrome's normal
+tab strip and below in the vertical one — the extension works on tab positions,
+which are the same either way, so it needs no special handling for vertical
+tabs. There is a test for it.
 
 ## What it does
 
@@ -50,8 +53,13 @@ batch must be left exactly where Chrome put it or the layout comes apart:
 
 - **A tab group is opening in this window.** `chrome.tabGroups.onCreated` is the
   signal, not each tab's own `groupId` — Chrome stamps that a beat later and not
-  always within the settle delay, which used to tear groups apart at random.
-  The group handler moves the group as a whole, or leaves it alone.
+  always within the settle delay, which used to tear groups apart at random. The
+  group event still has to arrive within that delay, but its window is far wider
+  than the one it replaced, and the per-tab `groupId` check stays as a backstop.
+  A group only counts as *opening* if brand-new tabs arrived with it: a group
+  must contain a tab, so a saved group's tabs always exist first, while a group
+  you build out of tabs you already had brings none. The group handler then moves
+  the group as a whole, or leaves it alone.
 - **A burst of creations.** Three or more in one window inside 700ms is Chrome,
   not a person: session restore, open-all-bookmarks.
 - **Session restore.** `onStartup` opens a hush that extends while tabs keep
@@ -73,8 +81,17 @@ Launches Chrome for Testing with the extension loaded, drives it over CDP, and
 uses the extension's own service worker as the oracle. Set `CHROME` to point at
 a different build.
 
+```
+VERTICAL=1 node test.mjs
+```
+
+Adds a run against the vertical tab strip. Headful, so windows will open and
+close: headless Chrome draws no browser UI, so the strip can't switch there.
+
 ## Notes
 
 - Works in Incognito (spanning).
+- Works with the vertical tab strip (`chrome://flags` → Vertical tabs). Covered
+  by `VERTICAL=1 node test.mjs`, which has to run headful.
 - Permissions: `tabs`, `tabGroups`, `storage`. No network access, no data
   collection; the two settings live in `chrome.storage.local`.
