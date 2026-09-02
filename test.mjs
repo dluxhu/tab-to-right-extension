@@ -237,11 +237,25 @@ async function coreChecks({ inSW, strip }, tag = '') {
   check('two-tab group stays at the end, intact' + tag,
         s.slice(-2).join(' ') === `${s.length - 2}:${ga.ids[0]}G${ga.gid} ${s.length - 1}:${ga.ids[1]}G${ga.gid}`,
         `after: ${s.join(' ')}\n      expected tail ${ga.ids[0]}G${ga.gid} ${ga.ids[1]}G${ga.gid}`);
+
+  // 7. A tab that starts LEFT of its anchor. chrome.tabs.move takes the final
+  //    index, so the anchor slides down one as this tab is lifted out: asking for
+  //    anchor + 1 overshoots and leaves a gap between them.
+  await sleep(1200);
+  await inSW(`await chrome.tabs.update(${mid}, { active: true });`);
+  await sleep(600);
+  const leftward = await inSW(`return (await chrome.tabs.create({ url:'about:blank', active:false, index:1 })).id;`);
+  await sleep(1400);
+  s = await strip();
+  const home = slotOf(s, mid);
+  check('a tab created left of the current tab still lands right after it' + tag,
+        home >= 0 && slotOf(s, leftward) === home + 1,
+        `after: ${s.join(' ')}\n      current tab ${mid} at ${home}, new tab ${leftward} at ${slotOf(s, leftward)}`);
 }
 
 await withChrome(EXT, api => coreChecks(api));
 
-// 7. With groupPlacement 'right', the whole group moves and stays a group.
+// 8. With groupPlacement 'right', the whole group moves and stays a group.
 const alt = mkdtempSync(join(tmpdir(), 'ext-right-'));
 cpSync(EXT, alt, { recursive: true, filter: src => !/\/(\.git|dist|node_modules)$/.test(src) });
 const bg = join(alt, 'background.js');
@@ -264,7 +278,7 @@ await withChrome(alt, async ({ inSW, strip }) => {
         s[at + 1] === `${at + 1}:${gb.ids[0]}G${gb.gid}` && s[at + 2] === `${at + 2}:${gb.ids[1]}G${gb.gid}`,
         `after: ${s.join(' ')}\n      current tab ${mid} at ${at}, expected ${gb.ids[0]}G${gb.gid} then ${gb.ids[1]}G${gb.gid}`);
 
-  // 8. Grouping tabs you already had is not a group opening, so even on 'right'
+  // 9. Grouping tabs you already had is not a group opening, so even on 'right'
   //    the group must stay exactly where the user built it. Built at the END of
   //    the strip on purpose: that is where an opening group lands, so the
   //    end-of-strip guard can't carry this check — only the tab ages can.
@@ -289,7 +303,7 @@ await withChrome(alt, async ({ inSW, strip }) => {
         slotOf(s, t1) === slotOf(before, t1) && slotOf(s, t2) === slotOf(before, t2),
         `before: ${before.join(' ')}\n      after:  ${s.join(' ')}\n      group ${gid}`);
 
-  // 9. A real group opening focuses one of its own tabs, and does so before the
+  // 10. A real group opening focuses one of its own tabs, and does so before the
   //    group event arrives, so the anchor has to be the tab the user was on
   //    *before* that. Tabs are created active:false everywhere else, which hid
   //    this entirely.
@@ -310,7 +324,7 @@ await withChrome(alt, async ({ inSW, strip }) => {
         anchor >= 0 && gf.ids.every((id, i) => slotOf(s, id) === anchor + 1 + i),
         `after: ${s.join(' ')}\n      tab you were on ${mid} at ${anchor}, group ${gf.ids}`);
 
-  // 10. ...and the next new tab is still repositioned, rather than being written
+  // 11. ...and the next new tab is still repositioned, rather than being written
   //    off as part of a group that is opening. It also must not be swallowed by
   //    the group it now lands in front of.
   await sleep(1200);
@@ -323,7 +337,7 @@ await withChrome(alt, async ({ inSW, strip }) => {
         slotOf(s, t3) === slotOf(s, mid) + 1 && !s[slotOf(s, t3)].includes('G'),
         `after: ${s.join(' ')}\n      current tab ${mid} at ${slotOf(s, mid)}, new tab ${t3} at ${slotOf(s, t3)}`);
 
-  // 11. Opening a group while sitting in the middle of another one: the new group
+  // 12. Opening a group while sitting in the middle of another one: the new group
   //     goes after the whole of the current group, never nested inside it.
   await sleep(1200);
   const inner = await inSW(`
@@ -353,7 +367,7 @@ await withChrome(alt, async ({ inSW, strip }) => {
         `after: ${s.join(' ')}\n      current group ${inner.gid} ends at ${innerEnd}, new group ${outer.gid} = ${outer.ids}`);
 });
 
-// 12. The vertical tab strip. Headful only — headless draws no browser UI at all,
+// 13. The vertical tab strip. Headful only — headless draws no browser UI at all,
 //    so the strip can't switch there. VERTICAL=1 node test.mjs to include it.
 if (process.env.VERTICAL) {
   const VERT = { headless: false, features: 'VerticalTabs,VerticalTabsLaunch' };

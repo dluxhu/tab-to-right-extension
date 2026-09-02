@@ -385,13 +385,20 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     via: viaOpener ? 'opener' : ref.id === activeBefore ? 'active' : viaHistory ? 'history' : 'lastAccessed'
   });
 
-  // Re-read the reference: it may itself have been repositioned since the query
-  // above, in which case the index from that snapshot would move us nowhere.
+  // Re-read both: the reference may itself have been repositioned since the query
+  // above, and this tab's own index is still the pre-settle snapshot.
   // Grouping is best-effort, so a failure there never undoes the move.
-  const anchor = await chrome.tabs.get(ref.id).catch(() => ref);
+  const [anchor, moving] = await Promise.all([
+    chrome.tabs.get(ref.id).catch(() => ref),
+    chrome.tabs.get(tab.id).catch(() => tab),
+  ]);
+  // chrome.tabs.move takes the *final* index. Coming from the left, the anchor
+  // slides down one as this tab is lifted out, so the anchor's current index is
+  // what lands immediately after it; from the right, one past it.
+  const destination = moving.index < anchor.index ? anchor.index : anchor.index + 1;
   try {
-    await chrome.tabs.move(tab.id, { index: anchor.index + 1 });
-    console.log('[dLux TabToRight] moved tab', tab.id, 'after', anchor.id);
+    await chrome.tabs.move(tab.id, { index: destination });
+    console.log('[dLux TabToRight] moved tab', tab.id, 'to', destination, 'after', anchor.id);
   } catch (err) {
     console.log('[dLux TabToRight] move failed', err?.message || err);
     return;
