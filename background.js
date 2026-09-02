@@ -202,11 +202,20 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   console.log('[dLux TabToRight] group created', { id: group.id, winId, placement: settings.groupPlacement });
   if (settings.groupPlacement !== 'right') return;
 
+  // Asked now rather than after the wait below: Window.focused is false whenever
+  // Chrome isn't the frontmost application, and the user may well click away while
+  // the group's tabs are still loading.
+  const focusedAtOpen = chrome.windows.get(winId).then(w => !!w.focused).catch(() => false);
+
   await new Promise(r => setTimeout(r, GROUP_FILL_MS));
   if (Date.now() < hushUntil) {
     console.log('[dLux TabToRight] group skipped: startup restore');
     return;
   }
+
+  // Awaited before the snapshot below, so nothing can shift the tab strip between
+  // taking it and acting on it.
+  const wasFocused = await focusedAtOpen;
 
   let allTabs;
   try {
@@ -231,12 +240,12 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   // What does separate them is focus — the browser window's, not the tab's.
   // tab.active is per-window selection, so a background window being restored has
   // a selected tab like any other, and its group can hold it. Opening a saved group
-  // happens in the window the user is looking at and focuses one of its own tabs.
-  // So: discarded, and not selected in the focused window.
+  // happens in the window the user is looking at, at the moment they click, and
+  // focuses one of its own tabs. So: discarded, and not selected in a window that
+  // was focused when the group appeared.
   // ponytail: the hush is the real restore guard; this is belt and braces, and a
   // group restored into the foreground window still rides on the hush.
-  const win = await chrome.windows.get(winId).catch(() => null);
-  const openedHere = !!win?.focused && groupTabs.some(t => t.active);
+  const openedHere = wasFocused && groupTabs.some(t => t.active);
   if (!openedHere && groupTabs.some(t => t.discarded)) {
     console.log('[dLux TabToRight] group skipped: discarded (session restore)');
     return;
