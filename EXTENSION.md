@@ -99,7 +99,8 @@ New
   both strips, so nothing needed adapting, and the vertical strip now has a test.
 - Option: choose whether a saved tab group opens at the end of the tab strip
   (Chrome's default) or next to your current tab. Either way the group moves as
-  a whole and stays a group.
+  a whole and stays a group. Opened from inside another group, it lands after
+  that group rather than nested inside it.
 - Clicking the toolbar icon opens the options.
 
 Fixed

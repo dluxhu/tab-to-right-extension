@@ -44,7 +44,7 @@ async function withChrome(extDir, fn, { headless = true, prefs, features } = {})
     'about:blank',
   ], { stdio: 'ignore' });
 
-  let ws, nextId = 1;
+  let ws, nextId = 1, swSession;
   const pending = new Map();
   const send = (method, params = {}, sessionId) => {
     const id = nextId++;
@@ -80,7 +80,6 @@ async function withChrome(extDir, fn, { headless = true, prefs, features } = {})
       }
     }
 
-    let swSession;
     for (let i = 0; ; i++) {
       const { targetInfos } = await send('Target.getTargets');
       const sw = targetInfos.find(t => t.type === 'service_worker' && t.url.includes('background.js'));
@@ -170,7 +169,8 @@ async function coreChecks({ inSW, strip }, tag = '') {
   await sleep(900);
   s = await strip();
   const at = slotOf(s, mid);
-  check('single new tab moves next to active tab' + tag, s[at + 1].endsWith('*'), s.join(' '));
+  check('single new tab moves next to active tab' + tag,
+        at >= 0 && !!s[at + 1] && s[at + 1].endsWith('*'), s.join(' '));
 
   // 2. A burst (session restore, open-all-bookmarks) is left alone.
   await sleep(1200);
@@ -270,15 +270,67 @@ await withChrome(alt, async ({ inSW, strip }) => {
         slotOf(s, t1) === slotOf(before, t1) && slotOf(s, t2) === slotOf(before, t2),
         `before: ${before.join(' ')}\n      after:  ${s.join(' ')}\n      group ${gid}`);
 
-  // 8. ...and the next new tab is still repositioned, rather than being written
-  //    off as part of a group that is opening.
+  // 8. A real group opening focuses one of its own tabs, and does so before the
+  //    group event arrives, so the anchor has to be the tab the user was on
+  //    *before* that. Tabs are created active:false everywhere else, which hid
+  //    this entirely.
   await sleep(1200);
-  const t3 = await inSW(`return (await chrome.tabs.create({ url:'about:blank' })).id;`);
-  await sleep(1000);
+  await inSW(`await chrome.tabs.update(${mid}, { active: true });`);
+  await sleep(600);
+  const gf = await inSW(`
+    const ids = [];
+    for (const i of [1,2,3]) ids.push((await chrome.tabs.create({ url:'about:blank', active:false })).id);
+    await chrome.tabs.update(ids[0], { active: true });
+    const gid = await chrome.tabs.group({ tabIds: ids });
+    return { ids, gid };
+  `);
+  await sleep(2200);
   s = await strip();
-  check('a new tab straight after grouping is still moved',
-        slotOf(s, t3) === slotOf(s, mid) + 1,
+  const anchor = slotOf(s, mid);
+  check('a group that steals focus still lands next to the tab you were on',
+        anchor >= 0 && gf.ids.every((id, i) => slotOf(s, id) === anchor + 1 + i),
+        `after: ${s.join(' ')}\n      tab you were on ${mid} at ${anchor}, group ${gf.ids}`);
+
+  // 9. ...and the next new tab is still repositioned, rather than being written
+  //    off as part of a group that is opening. It also must not be swallowed by
+  //    the group it now lands in front of.
+  await sleep(1200);
+  await inSW(`await chrome.tabs.update(${mid}, { active: true });`);
+  await sleep(600);
+  const t3 = await inSW(`return (await chrome.tabs.create({ url:'about:blank' })).id;`);
+  await sleep(1200);
+  s = await strip();
+  check('a new tab straight after grouping is still moved, and stays ungrouped',
+        slotOf(s, t3) === slotOf(s, mid) + 1 && !s[slotOf(s, t3)].includes('G'),
         `after: ${s.join(' ')}\n      current tab ${mid} at ${slotOf(s, mid)}, new tab ${t3} at ${slotOf(s, t3)}`);
+
+  // 10. Opening a group while sitting in the middle of another one: the new group
+  //     goes after the whole of the current group, never nested inside it.
+  await sleep(1200);
+  const inner = await inSW(`
+    const ids = [];
+    for (const i of [1,2,3]) ids.push((await chrome.tabs.create({ url:'about:blank', active:false })).id);
+    const gid = await chrome.tabs.group({ tabIds: ids });
+    return { ids, gid };
+  `);
+  await sleep(2200);
+  await inSW(`await chrome.tabs.update(${inner.ids[1]}, { active: true });`); // middle tab
+  await sleep(600);
+  const outer = await inSW(`
+    const ids = [];
+    for (const i of [1,2,3]) ids.push((await chrome.tabs.create({ url:'about:blank', active:false })).id);
+    const gid = await chrome.tabs.group({ tabIds: ids });
+    return { ids, gid };
+  `);
+  await sleep(2200);
+  s = await strip();
+  const innerEnd = Math.max(...inner.ids.map(id => slotOf(s, id)));
+  const innerIntact = inner.ids.every((id, i) => slotOf(s, id) === slotOf(s, inner.ids[0]) + i
+                                                && s[slotOf(s, id)].includes(`G${inner.gid}`));
+  check('a group opened from inside a group lands after it, not in it',
+        innerIntact && outer.ids.every((id, i) => slotOf(s, id) === innerEnd + 1 + i
+                                                 && s[slotOf(s, id)].includes(`G${outer.gid}`)),
+        `after: ${s.join(' ')}\n      current group ${inner.gid} ends at ${innerEnd}, new group ${outer.gid} = ${outer.ids}`);
 });
 
 // 7. The vertical tab strip. Headful only — headless draws no browser UI at all,

@@ -14,8 +14,14 @@
 // activation, so a freshly-opened background tab would outrank the current tab.)
 // ponytail: in-memory, reset on service-worker restart; the lastAccessed fallback
 // below covers that gap until the next onActivated repopulates it.
+// Two deep: opening a saved tab group focuses one of its own tabs, so by the time
+// the group event arrives the "current tab" can already be a group member. The
+// one before it is then the tab the user was actually on.
 const lastActiveByWindow = new Map();
+const prevActiveByWindow = new Map();
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  const current = lastActiveByWindow.get(windowId);
+  if (current !== undefined && current !== tabId) prevActiveByWindow.set(windowId, current);
   lastActiveByWindow.set(windowId, tabId);
 });
 chrome.tabs.query({ active: true }).then(tabs => {
@@ -85,6 +91,7 @@ function recentCreates(winId) {
 chrome.windows.onRemoved.addListener(winId => {
   createTimes.delete(winId);
   lastActiveByWindow.delete(winId);
+  prevActiveByWindow.delete(winId);
   groupOpenedAt.delete(winId);
 });
 
@@ -94,7 +101,7 @@ chrome.windows.onRemoved.addListener(winId => {
 // group is under the burst threshold, so groups came apart at random. This still
 // needs the event within the settle delay below, but that window is much wider
 // than the one it replaced, and the per-tab groupId check remains as a backstop.
-const groupOpenedAt = new Map(); // windowId -> when a group last appeared there
+const groupOpenedAt = new Map(); // windowId -> { at, groupId } of the last group
 
 // Is this new tab part of a group that is opening? Chrome doesn't promise an
 // order between tabs.onCreated and tabGroups.onCreated, so either shape of the
@@ -102,16 +109,18 @@ const groupOpenedAt = new Map(); // windowId -> when a group last appeared there
 // the group did. A tab created *after* a group appeared and still ungrouped is
 // just a new tab — Cmd+T straight after grouping some tabs by hand.
 function groupOpening(winId, tab, tabCreatedAt) {
-  const at = groupOpenedAt.get(winId);
-  if (at === undefined || Date.now() - at >= GROUP_OPENING_MS) return false;
-  return tab.groupId !== -1 || tabCreatedAt <= at;
+  const g = groupOpenedAt.get(winId);
+  if (!g || Date.now() - g.at >= GROUP_OPENING_MS) return false;
+  // Its own group, not merely some group: a link opened from a tab that happens
+  // to sit in an unrelated group is still a link, and still gets restacked.
+  return tab.groupId === g.groupId || tabCreatedAt <= g.at;
 }
 
 chrome.tabGroups.onCreated.addListener(async (group) => {
   const winId = group.windowId;
-  groupOpenedAt.set(winId, Date.now());
-  // Captured before the group's tabs steal focus.
-  const prevActiveId = lastActiveByWindow.get(winId);
+  groupOpenedAt.set(winId, { at: Date.now(), groupId: group.id });
+  // Captured before anything else steals focus; the group may already hold one.
+  const anchors = [lastActiveByWindow.get(winId), prevActiveByWindow.get(winId)];
   await settingsReady;
   console.log('[dLux TabToRight] group created', { id: group.id, winId, placement: settings.groupPlacement });
   if (settings.groupPlacement !== 'right') return;
@@ -132,6 +141,16 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   const groupTabs = allTabs.filter(t => t.groupId === group.id);
   if (groupTabs.length === 0) return; // gone again already
 
+  // The restore backstop the per-tab path has, because onStartup can lose the race
+  // with the first restored tabs. Not the burst guard, though: a group opening is
+  // itself a burst of creations, so that would refuse every group of three or more.
+  // ponytail: leans on Chrome restoring group tabs lazily. A restored one-tab group
+  // that isn't discarded rides on the hush alone.
+  if (groupTabs.some(t => t.discarded)) {
+    console.log('[dLux TabToRight] group skipped: discarded (session restore)');
+    return;
+  }
+
   // Only a group that arrived with brand-new tabs is a group *opening*. One the
   // user built out of tabs they already had belongs where they built it. Asked
   // here, once the group has filled, so it doesn't depend on event ordering.
@@ -148,15 +167,13 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   }
 
   const others = allTabs.filter(t => t.groupId !== group.id);
-  // Only fall back to lastAccessed when nothing was ever tracked (cold start).
-  // If the tracked tab is one of the group's own, there is no sensible anchor —
-  // leave the group where Chrome put it rather than guessing.
-  let ref;
-  if (prevActiveId === undefined) {
+  // The tab the user was on: the current one, or the one before it when the group
+  // has already taken focus. lastAccessed is a last resort — this file's header
+  // explains why it can't be trusted on its own.
+  let ref = anchors.map(id => others.find(t => t.id === id)).find(Boolean);
+  if (!ref) {
     others.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
     ref = others[0];
-  } else {
-    ref = others.find(t => t.id === prevActiveId);
   }
   if (!ref) {
     console.log('[dLux TabToRight] group skipped: no reference tab');

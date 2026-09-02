@@ -19,7 +19,8 @@ tabs. There is a test for it.
   switch it off in the options.
 - **Saved tab groups** open at the end of the strip (Chrome's default) or next
   to your current tab — your choice in the options. Either way the group moves
-  as a whole and stays a group.
+  as a whole and stays a group. Opened while you're inside another group, it
+  lands after the whole of that group rather than nested inside it.
 
 ## What it leaves alone
 
