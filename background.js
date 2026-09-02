@@ -198,14 +198,14 @@ function groupOpening(winId, tab, tabCreatedAt) {
 chrome.tabGroups.onCreated.addListener(async (group) => {
   const winId = group.windowId;
   groupOpenedAt.set(winId, { at: Date.now(), groupId: group.id });
+  // Before the await: Window.focused is false whenever Chrome isn't the frontmost
+  // application, and the user may well click away while the group's tabs load. On
+  // a cold worker `ready` is several IPC round-trips, and opening a saved group is
+  // exactly what wakes one. Costs a cheap query when placement is 'end'.
+  const focusedAtOpen = chrome.windows.get(winId).then(w => !!w.focused).catch(() => false);
   await ready;
   console.log('[dLux TabToRight] group created', { id: group.id, winId, placement: settings.groupPlacement });
   if (settings.groupPlacement !== 'right') return;
-
-  // Asked now rather than after the wait below: Window.focused is false whenever
-  // Chrome isn't the frontmost application, and the user may well click away while
-  // the group's tabs are still loading.
-  const focusedAtOpen = chrome.windows.get(winId).then(w => !!w.focused).catch(() => false);
 
   await new Promise(r => setTimeout(r, GROUP_FILL_MS));
   if (Date.now() < hushUntil) {
