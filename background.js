@@ -228,12 +228,16 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   // is worse: restored tabs load in the background during the wait above, and the
   // window's active tab was never discarded, so one loaded member unlocks it.
   //
-  // What does separate them is focus. Opening a saved group focuses one of its own
-  // tabs — the same fact the anchor logic leans on — while a group restored into a
-  // window the user isn't looking at holds none. So: discarded and unfocused.
+  // What does separate them is focus — the browser window's, not the tab's.
+  // tab.active is per-window selection, so a background window being restored has
+  // a selected tab like any other, and its group can hold it. Opening a saved group
+  // happens in the window the user is looking at and focuses one of its own tabs.
+  // So: discarded, and not selected in the focused window.
   // ponytail: the hush is the real restore guard; this is belt and braces, and a
   // group restored into the foreground window still rides on the hush.
-  if (!groupTabs.some(t => t.active) && groupTabs.some(t => t.discarded)) {
+  const win = await chrome.windows.get(winId).catch(() => null);
+  const openedHere = !!win?.focused && groupTabs.some(t => t.active);
+  if (!openedHere && groupTabs.some(t => t.discarded)) {
     console.log('[dLux TabToRight] group skipped: discarded (session restore)');
     return;
   }
