@@ -18,9 +18,10 @@ WHAT IT DOES
 • Works with the tab strip + button and New Tab menu
 • Also covers common UI new tabs (e.g. Bookmark Manager, History, and similar pages opened from Chrome’s UI)
 • Keeps every link you open in a new tab immediately to the right of the tab you clicked from, so the newest one is always the nearest. Chrome normally puts the second link after the first, pushing it further away each time. Optional — on by default.
+• Opens saved tab groups either at the end of the tab strip or next to your current tab, whichever you prefer. The group moves as a whole and stays a group.
 • If your current tab is in a group, the new tab joins that group
 • Works in Incognito (spanning)
-• One optional setting, sensible default — install and go
+• Two optional settings, sensible defaults — install and go
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 WHAT IT LEAVES ALONE
@@ -30,9 +31,11 @@ Chrome already handles many cases well. This extension does not interfere with:
 
 • Duplicate Tab
 • Session restore, Cmd+Shift+T, and restored tab groups
-• Opening saved tab groups
 • Opening all bookmarks in a folder at once
 • Pinned tabs
+• Tabs you group yourself out of tabs you already had
+
+Saved tab groups open at the end of the strip by default, exactly as Chrome does it. If you'd rather have them next to your current tab, that's a setting.
 
 Your existing tab order and groups stay intact.
 
@@ -40,8 +43,8 @@ Your existing tab order and groups stay intact.
 PRIVACY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-• Uses only the "tabs" and "storage" permissions
-• Your one setting is stored locally on your own device — never synced, never sent anywhere
+• Uses only the "tabs", "tabGroups" and "storage" permissions
+• Your settings are stored locally on your own device — never synced, never sent anywhere
 • No tracking, analytics, or ads
 • No data collection
 • No remote code or network requests
@@ -53,7 +56,9 @@ PERMISSIONS
 
 tabs — Required to see when a new tab is created and move it next to your previous tab.
 
-storage — Stores your single on/off preference locally.
+tabGroups — Required to notice a tab group opening and to move it in one piece instead of tab by tab.
+
+storage — Stores your two preferences locally.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 HOW TO USE
@@ -65,7 +70,7 @@ HOW TO USE
 
 That’s it — the defaults suit most people.
 
-Optional: to turn off link stacking, open chrome://extensions, find dLux Open New Tab To The Right, click Details, then Extension options.
+To change anything, click the extension's toolbar icon (pin it from the puzzle-piece menu if you don't see it). You can also reach the settings from chrome://extensions → Details → Extension options.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SOURCE CODE
@@ -84,6 +89,20 @@ If a new tab lands in the wrong place, note what you did (keyboard, menu, group,
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CHANGES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 1.3.0 — 2026-09-02
+
+New
+- Option: choose whether a saved tab group opens at the end of the tab strip
+  (Chrome's default) or next to your current tab. Either way the group moves as
+  a whole and stays a group.
+- Clicking the toolbar icon opens the options.
+
+Fixed
+- Opening a saved tab group could still pull tabs out of it. The previous fix
+  waited a fixed moment for Chrome to mark each tab as grouped, which it does not
+  always do in time — so a group came apart or stayed intact at random. Groups
+  are now recognised when the group itself appears, which doesn't race.
 
 ## 1.2.0 — 2026-09-01
 

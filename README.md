@@ -1,74 +1,80 @@
 # dLux Open New Tab To The Right
 
-Chrome extension that makes **new tabs** (triggered by Cmd+T / Ctrl+T or the + button / menu) open immediately to the right of your current tab.
+Chrome extension that opens new tabs next to the tab you're working in, instead
+of at the far end of the strip.
 
-## What it affects
-- Keyboard shortcut for new tab (Cmd+T / Ctrl+T)
-- "New Tab" menu item / + button in the tab strip
+## What it does
 
-## What it deliberately ignores
-- Opening a link in a new tab (Cmd/Ctrl+click, context menu, etc.) — Chrome already does a good job here and these have an `openerTabId`.
-- Duplicate Tab — Chrome places the duplicate right next to the original.
-- Restoring tabs or tab groups (session restore, Cmd+Shift+T, saved groups, third-party session managers) — restored tabs carry their real URLs and/or are inserted at non-end positions, so they are left exactly where Chrome puts them. Groups stay together.
-- Anything that already has a `groupId` at creation time.
+- **New tab** (Cmd+T / Ctrl+T, the + button, the New Tab menu item) opens
+  immediately to the right of your current tab.
+- Also covers pages Chrome opens from its own UI: Bookmark Manager, History,
+  Downloads, Settings, and bookmarks opened in a new tab.
+- A new tab opened while you're inside a tab group joins that group.
+- **Links** opened in a new tab stay immediately to the right of the tab you
+  clicked from, so the newest is always the nearest. Chrome's default puts the
+  second link after the first, pushing each new one further away. On by default,
+  switch it off in the options.
+- **Saved tab groups** open at the end of the strip (Chrome's default) or next
+  to your current tab — your choice in the options. Either way the group moves
+  as a whole and stays a group.
+
+## What it leaves alone
+
+- Duplicate Tab.
+- Session restore and Cmd+Shift+T.
+- Opening all bookmarks in a folder at once.
+- Pinned tabs.
+- Tabs you group yourself out of tabs you already had.
+
+## Options
+
+Click the extension's toolbar icon, or go to `chrome://extensions` → Details →
+Extension options.
 
 ## Installation (development / unpacked)
 
 1. Clone or download this folder.
 2. Open Chrome and go to `chrome://extensions`.
 3. Enable **Developer mode** (top right toggle).
-4. Click **Load unpacked**.
-5. Select the folder containing the extension (e.g. `tab-to-right-extension`).
+4. Click **Load unpacked** and select this folder.
 
-The extension has no icon or popup — it just works silently.
+## How it works
 
-## How it works (briefly)
+Everything hangs off `chrome.tabs.onCreated`. After a short settle delay (a new
+tab's index and group membership are both still moving when the event fires) the
+tab is repositioned next to a reference tab — the tab that was active before the
+new one stole focus, or for a link, the tab it was opened from.
 
-- Listens to `chrome.tabs.onCreated`.
-- Skips anything with `openerTabId` (normal link opens).
-- Skips tabs pre-assigned to a group.
-- Only acts on tabs Chrome appended near the *end* of the strip (Cmd+T, Bookmark Manager / other chrome:// pages opened from UI or bookmarks bar, middle-click bookmarks, etc.).
-- To find *which* tab to place it after, it picks the other tab in the window with the highest `lastAccessed` time (the one you were most recently viewing). This is reliable even after the new tab steals focus and across MV3 service worker restarts.
-- No "is this an empty/newtab page" URL checks.
-- Moves it to `ref.index + 1`.
-- If the reference tab belongs to a group, the new one joins the same group.
+Most of the code is about *not* acting. Chrome creates tabs in batches, and a
+batch must be left exactly where Chrome put it or the layout comes apart:
 
-The end-of-strip check protects duplicate tab and most restore scenarios.
+- **A tab group is opening in this window.** `chrome.tabGroups.onCreated` is the
+  signal, not each tab's own `groupId` — Chrome stamps that a beat later and not
+  always within the settle delay, which used to tear groups apart at random.
+  The group handler moves the group as a whole, or leaves it alone.
+- **A burst of creations.** Three or more in one window inside 700ms is Chrome,
+  not a person: session restore, open-all-bookmarks.
+- **Session restore.** `onStartup` opens a hush that extends while tabs keep
+  arriving; lazy-restored tabs are discarded and skipped outright.
+- **Pinned tabs**, and tabs Chrome grouped itself.
+
+The active tab is tracked in a `Map` via `chrome.tabs.onActivated`, because a new
+tab steals focus before we can look. `tab.lastAccessed` can't stand in for it —
+Chrome bumps that on tab *creation* too — so it's only a cold-start fallback for
+a service worker that just woke up.
+
+## Tests
+
+```
+node test.mjs
+```
+
+Launches Chrome for Testing with the extension loaded, drives it over CDP, and
+uses the extension's own service worker as the oracle. Set `CHROME` to point at
+a different build.
 
 ## Notes
 
 - Works in Incognito (spanning).
-- No options / no tracking.
-- If you also want a dedicated shortcut that *forces* a new tab to the right regardless, consider pairing with an extension like "New Tab Here".
-
-## License
-
-MIT or whatever you want. Do whatever.
-
-## Development tips
-
-1. Go to `chrome://extensions`
-2. Find "dLux Open New Tab To The Right"
-3. Click the **service worker** link (or "Inspect views: service worker") to open the console.
-4. Reload the extension (the reload button on the extension card).
-5. Watch the console while you press **Cmd+T**.
-
-You should see lines starting with `[dLux TabToRight]`.
-
-### Common things the logs will tell you
-- `onCreated` + the `url` / `openerTabId` it saw
-- `skipped: has openerTabId` → this was a link open, correctly ignored
-- `skipped: not a fresh new tab page` → the URL check rejected it (rare now)
-- `repositioning using current active ...` or `using previous tab`
-- If nothing appears at all for a Cmd+T, the extension may not be waking up or an early return is happening.
-
-### Test cases
-- Multiple tabs, Cmd+T repeatedly → each new tab appears directly after the previous active one.
-- Cmd/Ctrl+click a link → should open according to Chrome's normal rules (usually next to the link source), untouched by us.
-- Right-click tab → Duplicate → untouched.
-- Tab inside a group: Cmd+T should create the new tab right after it and keep it inside the group.
-- Restart Chrome with groups → groups should be restored exactly as Chrome left them.
-
-If after the update it still doesn't move, copy the console output from a Cmd+T and share it.
-
-Enjoy linear tab creation!
+- Permissions: `tabs`, `tabGroups`, `storage`. No network access, no data
+  collection; the two settings live in `chrome.storage.local`.

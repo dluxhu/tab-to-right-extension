@@ -7,18 +7,40 @@
     body {
       font: 13px/1.45 system-ui, sans-serif;
       margin: 16px 18px 18px;
+      min-width: 340px;
     }
+    fieldset { border: 0; margin: 0 0 18px; padding: 0; }
+    fieldset:last-of-type { margin-bottom: 0; }
+    legend { font-weight: 600; padding: 0 0 6px; }
     label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+    label + label { margin-top: 6px; }
     input { margin-top: 2px; }
     .hint { color: CanvasText; opacity: 0.65; margin: 8px 0 0 24px; font-size: 12px; }
   </style>
 </head>
 <body>
-  <label>
-    <input type="checkbox" id="stackLinks">
-    <span>Newest link always next to the current tab</span>
-  </label>
-  <p class="hint">Chrome puts the second link to the right of the first. This keeps every new link immediately to the right of the tab you clicked from.</p>
+  <fieldset>
+    <legend>Links opened in a new tab</legend>
+    <label>
+      <input type="checkbox" id="stackLinks">
+      <span>Newest link always next to the current tab</span>
+    </label>
+    <p class="hint">Chrome puts the second link to the right of the first. This keeps every new link immediately to the right of the tab you clicked from.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Opening a saved tab group</legend>
+    <label>
+      <input type="radio" name="groupPlacement" value="end">
+      <span>At the end of the tab strip (Chrome's default)</span>
+    </label>
+    <label>
+      <input type="radio" name="groupPlacement" value="right">
+      <span>Next to my current tab</span>
+    </label>
+    <p class="hint">The group moves as a whole either way — its tabs stay together and stay grouped.</p>
+  </fieldset>
+
   <script src="options.js"></script>
 </body>
 </html>

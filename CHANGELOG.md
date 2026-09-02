@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.0 — 2026-09-02
+
+New
+- Option: choose whether a saved tab group opens at the end of the tab strip
+  (Chrome's default) or next to your current tab. Either way the group moves as
+  a whole and stays a group.
+- Clicking the toolbar icon opens the options.
+
+Fixed
+- Opening a saved tab group could still pull tabs out of it. The previous fix
+  waited a fixed moment for Chrome to mark each tab as grouped, which it does not
+  always do in time — so a group came apart or stayed intact at random. Groups
+  are now recognised when the group itself appears, which doesn't race.
+
 ## 1.2.0 — 2026-09-01
 
 Fixed
