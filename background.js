@@ -360,30 +360,43 @@ chrome.tabs.onCreated.addListener(async (newTab) => {
     : undefined;
   const viaOpener = !!ref;
   if (!ref && activeBefore !== undefined) ref = others.find(t => t.id === activeBefore);
-  // Cold worker: nothing was tracked yet when this tab was created, so use the
-  // rehydrated history — minus any tab at least as new as this one, for the same
-  // reason activeBefore is read early.
-  if (!ref) ref = anchorIn(winId, others.filter(t => (newTabAt.get(t.id) ?? -Infinity) < createdAt));
+  // Anything at least as new as this tab is a sibling of it, never its anchor:
+  // that's the whole reason activeBefore is read early. Both fallbacks below
+  // need the same exclusion — lastAccessed especially, since Chrome bumps it on
+  // tab creation, so a sibling would sort to the very top.
+  const older = others.filter(t => (newTabAt.get(t.id) ?? -Infinity) < createdAt);
+  // Cold worker: nothing was tracked yet when this tab was created, so fall back
+  // to the rehydrated history.
+  let viaHistory = false;
+  if (!ref) {
+    ref = anchorIn(winId, older);
+    viaHistory = !!ref;
+  }
   if (!ref) {
     // Nothing tracked at all: the least-bad guess left.
-    others.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-    ref = others[0];
+    ref = [...older].sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
+  }
+  if (!ref) {
+    console.log('[dLux TabToRight] skipped: nothing to anchor to');
+    return;
   }
   console.log('[dLux TabToRight] reference', {
     id: ref.id, index: ref.index, groupId: ref.groupId,
-    via: viaOpener ? 'opener' : ref.id === activeBefore ? 'active' : 'history'
+    via: viaOpener ? 'opener' : ref.id === activeBefore ? 'active' : viaHistory ? 'history' : 'lastAccessed'
   });
 
-  // Move it just right of the reference; grouping is best-effort so a failure
-  // there never undoes the move.
+  // Re-read the reference: it may itself have been repositioned since the query
+  // above, in which case the index from that snapshot would move us nowhere.
+  // Grouping is best-effort, so a failure there never undoes the move.
+  const anchor = await chrome.tabs.get(ref.id).catch(() => ref);
   try {
-    await chrome.tabs.move(tab.id, { index: ref.index + 1 });
-    console.log('[dLux TabToRight] moved tab', tab.id, 'after', ref.id);
+    await chrome.tabs.move(tab.id, { index: anchor.index + 1 });
+    console.log('[dLux TabToRight] moved tab', tab.id, 'after', anchor.id);
   } catch (err) {
     console.log('[dLux TabToRight] move failed', err?.message || err);
     return;
   }
-  if (ref.groupId !== -1) {
-    chrome.tabs.group({ groupId: ref.groupId, tabIds: [tab.id] }).catch(() => {});
+  if (anchor.groupId !== -1) {
+    chrome.tabs.group({ groupId: anchor.groupId, tabIds: [tab.id] }).catch(() => {});
   }
 });
