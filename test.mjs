@@ -246,15 +246,23 @@ await withChrome(alt, async ({ inSW, strip }) => {
         `after: ${s.join(' ')}\n      current tab ${mid} at ${at}, expected ${gb.ids[0]}G${gb.gid} then ${gb.ids[1]}G${gb.gid}`);
 
   // 7. Grouping tabs you already had is not a group opening, so even on 'right'
-  //    the group must stay exactly where the user built it.
+  //    the group must stay exactly where the user built it. Built at the END of
+  //    the strip on purpose: that is where an opening group lands, so the
+  //    end-of-strip guard can't carry this check — only the tab ages can.
   await sleep(1200);
   await inSW(`await chrome.tabs.update(${mid}, { active: true });`);
   await sleep(500);
-  const t1 = await inSW(`return (await chrome.tabs.create({ url:'about:blank', active:false })).id;`);
-  await sleep(1000);
-  const t2 = await inSW(`return (await chrome.tabs.create({ url:'about:blank', active:false })).id;`);
-  await sleep(2400); // long enough that these no longer count as brand new
+  // A burst is left where Chrome puts it, which parks these three at the end.
+  const parked = await inSW(`
+    const ids = [];
+    for (const i of [1,2,3]) ids.push((await chrome.tabs.create({ url:'about:blank', active:false })).id);
+    return ids;
+  `);
+  await sleep(3000); // past NEW_TAB_MS, so these are no longer brand new
   const before = await strip();
+  const [t1, t2] = parked.slice(-2);
+  check('the tabs to group are at the end of the strip',
+        slotOf(before, t2) === before.length - 1, before.join(' '));
   const gid = await inSW(`return await chrome.tabs.group({ tabIds: [${t1}, ${t2}] });`);
   await sleep(1800);
   s = await strip();

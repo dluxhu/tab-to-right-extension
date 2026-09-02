@@ -71,9 +71,11 @@ const BURST_MIN = 3;
 const createTimes = new Map();
 
 // When each tab was created, so a group can tell brand-new tabs from ones the
-// user already had. Pruned by age; a tab older than this is never "new".
-const NEW_TAB_MS = 30000;
+// user already had. A tab is "new" just long enough for a group to appear and
+// finish filling; beyond that, grouping it is something the user did by hand.
+const NEW_TAB_MS = GROUP_OPENING_MS + GROUP_FILL_MS;
 const newTabAt = new Map();
+const isNewTab = id => Date.now() - (newTabAt.get(id) ?? -Infinity) < NEW_TAB_MS;
 function recentCreates(winId) {
   const now = Date.now();
   const times = (createTimes.get(winId) || []).filter(t => now - t < BURST_MS);
@@ -133,7 +135,7 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   // Only a group that arrived with brand-new tabs is a group *opening*. One the
   // user built out of tabs they already had belongs where they built it. Asked
   // here, once the group has filled, so it doesn't depend on event ordering.
-  if (!groupTabs.some(t => newTabAt.has(t.id))) {
+  if (!groupTabs.some(t => isNewTab(t.id))) {
     console.log('[dLux TabToRight] group skipped: built from tabs that already existed');
     return;
   }
@@ -146,11 +148,15 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   }
 
   const others = allTabs.filter(t => t.groupId !== group.id);
-  let ref = others.find(t => t.id === prevActiveId);
-  if (!ref) {
-    // Cold start: lastActiveByWindow hasn't been repopulated yet.
+  // Only fall back to lastAccessed when nothing was ever tracked (cold start).
+  // If the tracked tab is one of the group's own, there is no sensible anchor —
+  // leave the group where Chrome put it rather than guessing.
+  let ref;
+  if (prevActiveId === undefined) {
     others.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
     ref = others[0];
+  } else {
+    ref = others.find(t => t.id === prevActiveId);
   }
   if (!ref) {
     console.log('[dLux TabToRight] group skipped: no reference tab');
