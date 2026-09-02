@@ -222,14 +222,18 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
   // with the first restored tabs. Not the burst guard, though: a group opening is
   // itself a burst of creations, so that would refuse every group of three or more.
   //
-  // every, not some, and that distinction carries the feature: opening a saved
-  // group focuses one of its tabs, so at least one of them is always loaded,
-  // whereas a group restored into a background window is discarded throughout.
-  // Under `some`, a saved group whose other tabs load lazily would never be placed
-  // — the option silently dead, and no test here could see it, because the suite
-  // fabricates its groups with chrome.tabs.create.
-  // ponytail: the hush is the real restore guard; this is belt and braces.
-  if (groupTabs.every(t => t.discarded)) {
+  // Discardedness alone can't tell the two apart. `some` would refuse a saved group
+  // whose other tabs load lazily — the option silently dead, and no test here could
+  // see it, since the suite fabricates its groups with chrome.tabs.create. `every`
+  // is worse: restored tabs load in the background during the wait above, and the
+  // window's active tab was never discarded, so one loaded member unlocks it.
+  //
+  // What does separate them is focus. Opening a saved group focuses one of its own
+  // tabs — the same fact the anchor logic leans on — while a group restored into a
+  // window the user isn't looking at holds none. So: discarded and unfocused.
+  // ponytail: the hush is the real restore guard; this is belt and braces, and a
+  // group restored into the foreground window still rides on the hush.
+  if (!groupTabs.some(t => t.active) && groupTabs.some(t => t.discarded)) {
     console.log('[dLux TabToRight] group skipped: discarded (session restore)');
     return;
   }
